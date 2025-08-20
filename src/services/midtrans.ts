@@ -1,3 +1,4 @@
+// src/services/midtrans.ts
 import midtransClient from 'midtrans-client';
 import { prisma } from '../lib/prisma';
 
@@ -17,15 +18,18 @@ if (!MIDTRANS_SERVER_KEY || !MIDTRANS_CLIENT_KEY) {
   throw new Error('MIDTRANS_SERVER_KEY / MIDTRANS_CLIENT_KEY belum di-set');
 }
 
-// Informational guards (jangan pakai prefix SB- sebagai kebenaran mutlak)
+// Informational guards
 const looksSBServer = MIDTRANS_SERVER_KEY.startsWith('SB-');
 const looksSBClient = MIDTRANS_CLIENT_KEY.startsWith('SB-');
 if (!IS_PRODUCTION && (!looksSBServer || !looksSBClient)) {
-  console.warn('[Midtrans] Mode SANDBOX (MIDTRANS_PROD=false), tetapi key tampak non-SB. '
-    + 'Ini masih OK jika Dashboard Sandbox memang memberi key tanpa SB-. Pastikan kunci benar & satu merchant.');
+  console.warn(
+    '[Midtrans] Mode SANDBOX (MIDTRANS_PROD=false), tetapi key tampak non-SB.'
+  );
 }
 if (IS_PRODUCTION && (looksSBServer || looksSBClient)) {
-  console.warn('[Midtrans] Mode PRODUCTION, tetapi key tampak sandbox (SB-). Periksa kembali.');
+  console.warn(
+    '[Midtrans] Mode PRODUCTION, tetapi key tampak sandbox (SB-). Periksa kembali.'
+  );
 }
 
 /* ================= SNAP CLIENT ================= */
@@ -55,8 +59,15 @@ export type MidtransNotificationPayload = {
   gross_amount: string;
   signature_key: string;
   transaction_status:
-    | 'capture' | 'settlement' | 'pending' | 'deny' | 'cancel'
-    | 'expire' | 'failure' | 'refund' | 'chargeback';
+    | 'capture'
+    | 'settlement'
+    | 'pending'
+    | 'deny'
+    | 'cancel'
+    | 'expire'
+    | 'failure'
+    | 'refund'
+    | 'chargeback';
   payment_type?: string;
   fraud_status?: 'accept' | 'challenge' | 'deny';
   transaction_id?: string;
@@ -72,7 +83,7 @@ async function getPlanByIdOrSlug(planId: string) {
 
 // order_id Midtrans max 50 char → pakai slug (lebih pendek) + timestamp
 function newOrderId(prefix: string, slugOrId: string) {
-  const base = `${prefix}-${String(slugOrId)}`.slice(0, 28); // sisa untuk -ts
+  const base = `${prefix}-${String(slugOrId)}`.slice(0, 28);
   return `${base}-${Date.now()}`;
 }
 
@@ -123,7 +134,12 @@ export async function createSnapForPlan(params: CreateSnapForPlanParams) {
   const payload: any = {
     transaction_details: { order_id: orderId, gross_amount: grossAmount },
     item_details: [
-      { id: String(plan.id), price: grossAmount, quantity: 1, name: plan.name ?? `Plan ${plan.slug}` },
+      {
+        id: String(plan.id),
+        price: grossAmount,
+        quantity: 1,
+        name: plan.name ?? `Plan ${plan.slug}`,
+      },
     ],
     customer_details: {
       first_name: customer?.first_name ?? 'User',
@@ -143,11 +159,8 @@ export async function createSnapForPlan(params: CreateSnapForPlanParams) {
     payload.enabled_payments = enabledPayments;
   }
 
-  // Log ringan untuk diagnosa (akan terlihat di console server)
   console.log('[Midtrans] createTransaction payload:', {
     isProduction: IS_PRODUCTION,
-    hasServerKey: !!MIDTRANS_SERVER_KEY,
-    hasClientKey: !!MIDTRANS_CLIENT_KEY,
     orderId,
     grossAmount,
   });
@@ -158,22 +171,14 @@ export async function createSnapForPlan(params: CreateSnapForPlanParams) {
     throw new Error(apiMsg || e?.message || 'Midtrans createTransaction failed');
   });
 
-  await prisma.payment.create({
-    data: {
-      orderId,
-      planId: plan.id,
-      employerId: employerId ?? null,
-      userId: userId ?? null,
-      currency: 'IDR',
-      grossAmount,
-      status: 'pending',
-      token: res.token,
-      redirectUrl: res.redirect_url,
-      meta: { provider: 'midtrans', createdAt: new Date().toISOString() },
-    },
-  });
+  // ⚠️ Tidak menyimpan ke prisma.payment (karena model Payment tidak ada)
+  // Kalau nanti bikin model Payment di schema, baru simpan di sini.
 
-  return { token: res.token, redirect_url: res.redirect_url, order_id: orderId };
+  return {
+    token: res.token,
+    redirect_url: res.redirect_url,
+    order_id: orderId,
+  };
 }
 
 export async function handleMidtransNotification(raw: any) {
@@ -188,15 +193,12 @@ export async function handleMidtransNotification(raw: any) {
 
   const status = mapStatus(p);
 
-  await prisma.payment.updateMany({
-    where: { orderId: p.order_id },
-    data: {
-      status,
-      method: p.payment_type ?? undefined,
-      transactionId: p.transaction_id ?? undefined,
-      fraudStatus: p.fraud_status ?? undefined,
-      meta: { set: { ...(p as any), updatedAt: new Date().toISOString() } },
-    },
+  // ⚠️ Tidak update ke prisma.payment (karena model Payment tidak ada).
+  // Hanya log status.
+  console.log('[Midtrans] Webhook diterima:', {
+    order_id: p.order_id,
+    status,
+    payment_type: p.payment_type,
   });
 
   return { ok: true, order_id: p.order_id, status };

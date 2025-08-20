@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -6,8 +39,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const rss_parser_1 = __importDefault(require("rss-parser"));
-const p_limit_1 = __importDefault(require("p-limit"));
 const preview_1 = require("../utils/preview");
+// ❌ HAPUS import ESM langsung:
+// import pLimit from 'p-limit'
+// ✅ Ganti dengan helper dynamic import (jalan di CommonJS)
+async function getLimiter(concurrency) {
+    const mod = await Promise.resolve().then(() => __importStar(require('p-limit')));
+    return mod.default(concurrency);
+}
 const router = (0, express_1.Router)();
 // Rate limit
 const limiter = (0, express_rate_limit_1.default)({ windowMs: 60 * 1000, max: 60 });
@@ -86,8 +125,8 @@ router.get('/energy', async (req, res) => {
         });
         // Sort by date desc
         deduped.sort((a, b) => (b.pubDate || '').localeCompare(a.pubDate || ''));
-        // Fetch og:image with limited concurrency
-        const limitRun = (0, p_limit_1.default)(5);
+        // Fetch og:image with limited concurrency (pakai dynamic import)
+        const limitRun = await getLimiter(5);
         const withImages = await Promise.all(deduped.slice(0, limit).map((item) => limitRun(async () => {
             const image = item.link ? await (0, preview_1.getPreviewImage)(item.link) : null;
             return { ...item, image };

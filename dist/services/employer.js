@@ -9,21 +9,19 @@ exports.submitVerification = submitVerification;
 // src/services/employer.ts
 const prisma_1 = require("../lib/prisma");
 const hash_1 = require("../lib/hash");
-// Jika di schema kamu ada enum OnboardingStep, aktifkan import di bawah:
-// import { OnboardingStep, SubscriptionStatus } from '@prisma/client';
 async function checkAvailability(params) {
     const { slug, email } = params;
     const checks = {};
     if (slug) {
         checks.slugTaken = !!(await prisma_1.prisma.employer.findUnique({
             where: { slug },
-            select: { id: true }, // ⬅️ penting: hanya ambil kolom yang ada
+            select: { id: true },
         }));
     }
     if (email) {
         checks.emailTaken = !!(await prisma_1.prisma.employerAdminUser.findUnique({
             where: { email },
-            select: { id: true }, // aman juga
+            select: { id: true },
         }));
     }
     return checks;
@@ -33,7 +31,7 @@ async function createAccount(input) {
     let slug = base, i = 1;
     while (await prisma_1.prisma.employer.findUnique({
         where: { slug },
-        select: { id: true }, // ⬅️ cegah P2022 saat kolom lain belum ada
+        select: { id: true },
     })) {
         slug = `${base}-${i++}`;
     }
@@ -45,10 +43,9 @@ async function createAccount(input) {
                 legalName: input.companyName,
                 displayName: input.displayName,
                 website: input.website,
-                status: 'draft', // atau enum jika ada
-                // onboardingStep: OnboardingStep.PROFILE, // ⬅️ aktifkan jika enum sudah ada di schema
+                status: 'draft',
             },
-            select: { id: true }, // cukup yang dibutuhkan
+            select: { id: true },
         });
         await tx.employerAdminUser.create({
             data: {
@@ -70,9 +67,7 @@ async function upsertProfile(employerId, profile) {
         update: profile,
         create: { employerId, ...profile },
     });
-    // Jika pakai enum:
-    // await prisma.employer.update({ where: { id: employerId }, data: { onboardingStep: OnboardingStep.PACKAGE } }).catch(() => {});
-    await prisma_1.prisma.employer.update({ where: { id: employerId }, data: { onboardingStep: 'PACKAGE' } }).catch(() => { });
+    // tidak ada kolom onboardingStep di schema → tidak update apa-apa
     return { ok: true };
 }
 async function choosePlan(employerId, planSlug) {
@@ -86,13 +81,10 @@ async function choosePlan(employerId, planSlug) {
         data: {
             employerId,
             planId: plan.id,
-            status: 'active', // atau SubscriptionStatus.active jika enum ada
+            status: 'active',
         },
         select: { id: true },
     });
-    // Jika pakai enum:
-    // await prisma.employer.update({ where: { id: employerId }, data: { onboardingStep: OnboardingStep.JOB } }).catch(() => {});
-    await prisma_1.prisma.employer.update({ where: { id: employerId }, data: { onboardingStep: 'JOB' } }).catch(() => { });
     return { ok: true };
 }
 async function createDraftJob(employerId, data) {
@@ -100,9 +92,6 @@ async function createDraftJob(employerId, data) {
         data: { employerId, ...data, isDraft: true, isActive: false },
         select: { id: true },
     });
-    // Jika pakai enum:
-    // await prisma.employer.update({ where: { id: employerId }, data: { onboardingStep: OnboardingStep.VERIFY } }).catch(() => {});
-    await prisma_1.prisma.employer.update({ where: { id: employerId }, data: { onboardingStep: 'VERIFY' } }).catch(() => { });
     return { ok: true, jobId: job.id };
 }
 async function submitVerification(employerId, note, files) {
@@ -116,9 +105,6 @@ async function submitVerification(employerId, note, files) {
                 data: files.map((f) => ({ verificationId: req.id, fileUrl: f.url, fileType: f.type })),
             });
         }
-        // Jika pakai enum:
-        // await tx.employer.update({ where: { id: employerId }, data: { onboardingStep: OnboardingStep.DONE } });
-        await tx.employer.update({ where: { id: employerId }, data: { onboardingStep: 'DONE' } });
         return req;
     });
     return { ok: true, verificationId: vr.id };

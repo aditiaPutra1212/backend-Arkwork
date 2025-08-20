@@ -1,94 +1,57 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-// backend/src/routes/auth.ts
+// src/routes/auth.ts
 const express_1 = require("express");
-const client_1 = require("@prisma/client");
+const prisma_1 = require("../lib/prisma");
 const zod_1 = require("zod");
-const bcrypt = __importStar(require("bcryptjs"));
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const cookie_1 = require("cookie");
 const router = (0, express_1.Router)();
-const prisma = new client_1.PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 function signToken(p) {
-    return jsonwebtoken_1.default.sign(p, JWT_SECRET, { expiresIn: "7d" });
+    return jsonwebtoken_1.default.sign(p, JWT_SECRET, { expiresIn: '7d' });
 }
 function verifyToken(t) {
     return jsonwebtoken_1.default.verify(t, JWT_SECRET);
 }
 function setAuthCookie(res, token) {
-    res.setHeader("Set-Cookie", (0, cookie_1.serialize)("token", token, {
+    res.setHeader('Set-Cookie', (0, cookie_1.serialize)('token', token, {
         httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        path: '/',
         maxAge: 60 * 60 * 24 * 7, // 7 hari
     }));
 }
-/** ============== Helpers (tanpa owner/member) ============== **/
-async function resolveEmployerForUser(opts) {
+/** ============== Helpers ============== **/
+async function resolveEmployerBySlugOrLatest(opts) {
     const { employerSlug } = opts;
-    // 1) Jika slug diberikan → ambil by slug
+    // slug → employer
     if (employerSlug) {
-        const bySlug = await prisma.employer.findUnique({
+        const bySlug = await prisma_1.prisma.employer.findUnique({
             where: { slug: employerSlug },
             select: { id: true, slug: true, displayName: true, legalName: true },
         });
         if (bySlug)
             return bySlug;
     }
-    // 2) Fallback: ambil satu employer pertama (urut terbaru)
-    const first = await prisma.employer.findFirst({
-        orderBy: { createdAt: "desc" }, // sesuaikan dengan field timestamp kamu; kalau tidak ada, hapus baris ini
+    // fallback: employer terbaru
+    const first = await prisma_1.prisma.employer.findFirst({
+        orderBy: { createdAt: 'desc' },
         select: { id: true, slug: true, displayName: true, legalName: true },
     });
     return first || null;
 }
 /** ================= Validators ================= **/
-const signupSchema = zod_1.z.object({
+const registerAdminSchema = zod_1.z.object({
+    employerId: zod_1.z.string().min(1),
     email: zod_1.z.string().email(),
     password: zod_1.z.string().min(8),
-    name: zod_1.z.string().min(2).max(50).optional(),
+    fullName: zod_1.z.string().min(2).max(100).optional(),
 });
 const signinSchema = zod_1.z.object({
     email: zod_1.z.string().email(),
@@ -101,153 +64,180 @@ const switchEmployerSchema = zod_1.z.object({
 });
 /** ================= Routes ================= **/
 // GET /auth
-router.get("/", (_req, res) => {
-    res.json({ message: "Auth route works!" });
+router.get('/', (_req, res) => {
+    res.json({ message: 'Auth is alive' });
 });
-// POST /auth/signup
-router.post("/signup", async (req, res) => {
+// POST /auth/register-admin  (buat akun EmployerAdminUser)
+router.post('/register-admin', async (req, res) => {
     try {
-        const parsed = signupSchema.safeParse(req.body);
+        const parsed = registerAdminSchema.safeParse(req.body);
         if (!parsed.success)
             return res.status(400).json({ error: parsed.error.format() });
-        const { email, password, name } = parsed.data;
-        const exists = await prisma.user.findUnique({ where: { email } });
-        if (exists)
-            return res.status(409).json({ message: "Email sudah terdaftar" });
-        const passwordHash = await bcrypt.hash(password, 10);
-        const user = await prisma.user.create({
-            data: { email, name, passwordHash },
-            select: { id: true, email: true, name: true, photoUrl: true, cvUrl: true },
+        const { employerId, email, password, fullName } = parsed.data;
+        const employer = await prisma_1.prisma.employer.findUnique({ where: { id: employerId } });
+        if (!employer)
+            return res.status(404).json({ error: 'Employer not found' });
+        const exist = await prisma_1.prisma.employerAdminUser.findUnique({ where: { email } });
+        if (exist)
+            return res.status(409).json({ error: 'Email already used' });
+        const passwordHash = await bcryptjs_1.default.hash(password, 10);
+        const admin = await prisma_1.prisma.employerAdminUser.create({
+            data: {
+                employerId,
+                email,
+                passwordHash,
+                fullName: fullName ?? null,
+                isOwner: true,
+                agreedTosAt: new Date(),
+            },
+            select: { id: true, email: true, employerId: true, fullName: true },
         });
-        const isAdmin = ADMIN_EMAILS.includes(user.email.toLowerCase());
-        const token = signToken({ uid: user.id, role: isAdmin ? "admin" : "user", eid: null });
+        const token = signToken({ uid: admin.id, role: 'admin', eid: admin.employerId });
         setAuthCookie(res, token);
-        return res.status(201).json({ ...user, role: isAdmin ? "admin" : "user", employer: null });
+        return res.status(201).json({ ok: true, admin });
     }
     catch (e) {
-        console.error("SIGNUP ERROR:", e);
-        return res.status(500).json({ message: "Internal server error" });
+        console.error('REGISTER-ADMIN ERROR:', e);
+        return res.status(500).json({ message: 'Internal server error' });
     }
 });
-// POST /auth/signin
-router.post("/signin", async (req, res) => {
+// POST /auth/signin (login EmployerAdminUser)
+router.post('/signin', async (req, res) => {
     try {
         const parsed = signinSchema.safeParse(req.body);
         if (!parsed.success)
             return res.status(400).json({ error: parsed.error.format() });
         const { email, password, employerSlug } = parsed.data;
-        const user = await prisma.user.findUnique({ where: { email } });
-        if (!user)
-            return res.status(401).json({ message: "Email atau password salah" });
-        const ok = await bcrypt.compare(password, user.passwordHash);
+        const admin = await prisma_1.prisma.employerAdminUser.findUnique({ where: { email } });
+        if (!admin)
+            return res.status(401).json({ message: 'Email atau password salah' });
+        const ok = await bcryptjs_1.default.compare(password, admin.passwordHash);
         if (!ok)
-            return res.status(401).json({ message: "Email atau password salah" });
-        // Tentukan employer aktif berdasar slug (kalau ada) atau fallback
-        const employer = await resolveEmployerForUser({ employerSlug });
-        const isAdmin = ADMIN_EMAILS.includes(user.email.toLowerCase());
+            return res.status(401).json({ message: 'Email atau password salah' });
+        // employer aktif: pakai slug bila ada, kalau tidak pakai employerId admin
+        let employer = (await resolveEmployerBySlugOrLatest({ employerSlug })) ??
+            (await prisma_1.prisma.employer.findUnique({
+                where: { id: admin.employerId },
+                select: { id: true, slug: true, displayName: true, legalName: true },
+            }));
         const token = signToken({
-            uid: user.id,
-            role: isAdmin ? "admin" : "user",
-            eid: employer?.id ?? null,
+            uid: admin.id,
+            role: 'admin',
+            eid: employer?.id ?? admin.employerId ?? null,
         });
         setAuthCookie(res, token);
         return res.json({
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            photoUrl: user.photoUrl,
-            cvUrl: user.cvUrl,
-            role: isAdmin ? "admin" : "user",
-            employer, // { id, slug, displayName, legalName } | null
+            ok: true,
+            admin: {
+                id: admin.id,
+                email: admin.email,
+                fullName: admin.fullName ?? null,
+                employerId: admin.employerId,
+                isOwner: !!admin.isOwner,
+            },
+            employer,
         });
     }
     catch (e) {
-        console.error("SIGNIN ERROR:", e);
-        return res.status(500).json({ message: "Internal server error" });
+        console.error('SIGNIN ERROR:', e);
+        return res.status(500).json({ message: 'Internal server error' });
     }
 });
 // POST /auth/signout
-router.post("/signout", (_req, res) => {
-    res.setHeader("Set-Cookie", (0, cookie_1.serialize)("token", "", {
+router.post('/signout', (_req, res) => {
+    res.setHeader('Set-Cookie', (0, cookie_1.serialize)('token', '', {
         httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        path: '/',
         maxAge: 0,
     }));
     return res.status(204).end();
 });
 // GET /auth/me
-router.get("/me", async (req, res) => {
+router.get('/me', async (req, res) => {
     try {
-        const raw = req.headers.cookie || "";
+        const raw = req.headers.cookie || '';
         const cookies = (0, cookie_1.parse)(raw);
-        const token = cookies["token"];
+        const token = cookies['token'];
         if (!token)
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: 'Unauthorized' });
         const payload = verifyToken(token); // { uid, role, eid }
-        const user = await prisma.user.findUnique({
+        const admin = await prisma_1.prisma.employerAdminUser.findUnique({
             where: { id: payload.uid },
-            select: { id: true, email: true, name: true, photoUrl: true, cvUrl: true },
+            select: {
+                id: true,
+                email: true,
+                fullName: true,
+                employerId: true,
+                isOwner: true,
+                createdAt: true,
+            },
         });
-        if (!user)
-            return res.status(401).json({ message: "Unauthorized" });
+        if (!admin)
+            return res.status(401).json({ message: 'Unauthorized' });
         let employer = null;
         if (payload.eid) {
             employer =
-                (await prisma.employer.findUnique({
+                (await prisma_1.prisma.employer.findUnique({
                     where: { id: payload.eid },
                     select: { id: true, slug: true, displayName: true, legalName: true },
                 })) || null;
         }
         if (!employer) {
-            employer = (await resolveEmployerForUser({}));
+            employer = await resolveEmployerBySlugOrLatest({});
         }
-        return res.json({ ...user, role: payload.role, employer });
+        return res.json({ ...admin, role: payload.role, employer });
     }
     catch (e) {
-        console.error("ME ERROR:", e);
-        return res.status(401).json({ message: "Invalid token" });
+        console.error('ME ERROR:', e);
+        return res.status(401).json({ message: 'Invalid token' });
     }
 });
 // POST /auth/switch-employer
-router.post("/switch-employer", async (req, res) => {
+router.post('/switch-employer', async (req, res) => {
     try {
-        const raw = req.headers.cookie || "";
+        const raw = req.headers.cookie || '';
         const cookies = (0, cookie_1.parse)(raw);
-        const token = cookies["token"];
+        const token = cookies['token'];
         if (!token)
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: 'Unauthorized' });
         const payload = verifyToken(token);
         const parsed = switchEmployerSchema.safeParse(req.body);
         if (!parsed.success)
             return res.status(400).json({ error: parsed.error.format() });
         const { employerId, employerSlug } = parsed.data;
+        // karena admin selalu terikat ke satu employerId,
+        // kita abaikan input lain dan gunakan employerId milik admin saat ini bila tidak ada slug/id valid
         let employer = null;
         if (employerId) {
-            employer = await prisma.employer.findUnique({
+            employer = await prisma_1.prisma.employer.findUnique({
                 where: { id: employerId },
                 select: { id: true, slug: true, displayName: true, legalName: true },
             });
         }
         else if (employerSlug) {
-            employer = await prisma.employer.findUnique({
+            employer = await prisma_1.prisma.employer.findUnique({
                 where: { slug: employerSlug },
                 select: { id: true, slug: true, displayName: true, legalName: true },
             });
         }
         else {
-            employer = await resolveEmployerForUser({});
+            employer =
+                (await prisma_1.prisma.employer.findUnique({
+                    where: { id: (await prisma_1.prisma.employerAdminUser.findUnique({ where: { id: payload.uid } }))?.employerId },
+                    select: { id: true, slug: true, displayName: true, legalName: true },
+                })) || (await resolveEmployerBySlugOrLatest({}));
         }
         if (!employer)
-            return res.status(404).json({ message: "Employer tidak ditemukan" });
+            return res.status(404).json({ message: 'Employer tidak ditemukan' });
         const newToken = signToken({ uid: payload.uid, role: payload.role, eid: employer.id });
         setAuthCookie(res, newToken);
         return res.json({ ok: true, employer });
     }
     catch (e) {
-        console.error("SWITCH EMPLOYER ERROR:", e);
-        return res.status(500).json({ message: "Internal server error" });
+        console.error('SWITCH EMPLOYER ERROR:', e);
+        return res.status(500).json({ message: 'Internal server error' });
     }
 });
 exports.default = router;
