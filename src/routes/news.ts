@@ -1,8 +1,16 @@
 import { Router, Request, Response } from 'express'
 import rateLimit from 'express-rate-limit'
 import Parser from 'rss-parser'
-import pLimit from 'p-limit'
 import { getPreviewImage } from '../utils/preview'
+
+// ❌ HAPUS import ESM langsung:
+// import pLimit from 'p-limit'
+
+// ✅ Ganti dengan helper dynamic import (jalan di CommonJS)
+async function getLimiter(concurrency: number) {
+  const mod = await import('p-limit')
+  return mod.default(concurrency)
+}
 
 const router = Router()
 
@@ -93,8 +101,8 @@ router.get('/energy', async (req: Request, res: Response) => {
     // Sort by date desc
     deduped.sort((a, b) => (b.pubDate || '').localeCompare(a.pubDate || ''))
 
-    // Fetch og:image with limited concurrency
-    const limitRun = pLimit(5)
+    // Fetch og:image with limited concurrency (pakai dynamic import)
+    const limitRun = await getLimiter(5)
     const withImages = await Promise.all(
       deduped.slice(0, limit).map((item) =>
         limitRun(async () => {
