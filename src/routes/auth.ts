@@ -8,15 +8,20 @@ import { serialize, parse } from 'cookie'
 
 const router = Router()
 
+/** ================== ENV ================== **/
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
+const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || 'lax') as
+  | 'lax' | 'none' | 'strict'
+const COOKIE_SECURE =
+  process.env.COOKIE_SECURE === 'true' ||
+  (process.env.NODE_ENV === 'production' && COOKIE_SAMESITE === 'none')
 
-/** ================= JWT ================= **/
+/** ================= JWT helpers ================= **/
 type JWTPayload = {
   uid: string            // employerAdminUser.id
-  role: 'admin'          // sesuai schema sekarang, hanya admin
+  role: 'admin'
   eid?: string | null    // employerId aktif (opsional)
 }
-
 function signToken(p: JWTPayload) {
   return jwt.sign(p, JWT_SECRET, { expiresIn: '7d' })
 }
@@ -28,8 +33,8 @@ function setAuthCookie(res: Response, token: string) {
     'Set-Cookie',
     serialize('token', token, {
       httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      sameSite: COOKIE_SAMESITE,
+      secure: COOKIE_SECURE,
       path: '/',
       maxAge: 60 * 60 * 24 * 7, // 7 hari
     })
@@ -37,10 +42,17 @@ function setAuthCookie(res: Response, token: string) {
 }
 
 /** ============== Helpers ============== **/
-async function resolveEmployerBySlugOrLatest(opts: { employerSlug?: string | null }) {
-  const { employerSlug } = opts
+async function resolveEmployer(opts: { employerSlug?: string | null; employerId?: string | null }) {
+  const { employerSlug, employerId } = opts
 
-  // slug → employer
+  if (employerId) {
+    const byId = await prisma.employer.findUnique({
+      where: { id: employerId },
+      select: { id: true, slug: true, displayName: true, legalName: true },
+    })
+    if (byId) return byId
+  }
+
   if (employerSlug) {
     const bySlug = await prisma.employer.findUnique({
       where: { slug: employerSlug },
@@ -49,15 +61,20 @@ async function resolveEmployerBySlugOrLatest(opts: { employerSlug?: string | nul
     if (bySlug) return bySlug
   }
 
-  // fallback: employer terbaru
-  const first = await prisma.employer.findFirst({
+  const latest = await prisma.employer.findFirst({
     orderBy: { createdAt: 'desc' },
     select: { id: true, slug: true, displayName: true, legalName: true },
   })
-  return first || null
+  return latest || null
 }
 
 /** ================= Validators ================= **/
+const signinSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  employerSlug: z.string().min(1).optional(),
+})
+
 const registerAdminSchema = z.object({
   employerId: z.string().min(1),
   email: z.string().email(),
@@ -65,10 +82,13 @@ const registerAdminSchema = z.object({
   fullName: z.string().min(2).max(100).optional(),
 })
 
-const signinSchema = z.object({
+/** signup yang fleksibel: employerId/slug opsional */
+const signupSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  employerSlug: z.string().min(1).optional(), // opsional: pilih employer saat login
+  name: z.string().min(2).max(100).optional(),
+  employerId: z.string().min(1).optional(),
+  employerSlug: z.string().min(1).optional(),
 })
 
 const switchEmployerSchema = z.object({
@@ -80,10 +100,53 @@ const switchEmployerSchema = z.object({
 
 // GET /auth
 router.get('/', (_req, res) => {
-  res.json({ message: 'Auth is alive' })
+  res.json({ message: 'Auth route works!' })
 })
 
-// POST /auth/register-admin  (buat akun EmployerAdminUser)
+/** ------------ SIGNUP (alias ke register-admin, tapi flexible) ------------ */
+// POST /auth/signup
+router.post('/signup', async (req: Request, res: Response) => {
+  try {
+    const parsed = signupSchema.safeParse(req.body)
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.format() })
+
+    const { email, password, name, employerId, employerSlug } = parsed.data
+
+    const employer = await resolveEmployer({ employerId: employerId ?? null, employerSlug: employerSlug ?? null })
+    if (!employer) return res.status(404).json({ message: 'Employer not found' })
+
+    const exist = await prisma.employerAdminUser.findUnique({ where: { email } })
+    if (exist) return res.status(409).json({ message: 'Email already used' })
+
+    const passwordHash = await bcrypt.hash(password, 10)
+    const admin = await prisma.employerAdminUser.create({
+      data: {
+        employerId: employer.id,
+        email,
+        passwordHash,
+        fullName: name ?? null,
+        isOwner: true,
+        agreedTosAt: new Date(),
+      },
+      select: { id: true, email: true, employerId: true, fullName: true },
+    })
+
+    const token = signToken({ uid: admin.id, role: 'admin', eid: employer.id })
+    setAuthCookie(res, token)
+
+    return res.status(201).json({
+      ok: true,
+      admin,
+      employer: { id: employer.id, slug: employer.slug, displayName: employer.displayName, legalName: employer.legalName },
+    })
+  } catch (e) {
+    console.error('SIGNUP ERROR:', e)
+    return res.status(500).json({ message: 'Internal server error' })
+  }
+})
+
+/** ------ Tetap sediakan endpoint lama: /auth/register-admin ------ */
+// POST /auth/register-admin
 router.post('/register-admin', async (req: Request, res: Response) => {
   try {
     const parsed = registerAdminSchema.safeParse(req.body)
@@ -110,7 +173,7 @@ router.post('/register-admin', async (req: Request, res: Response) => {
       select: { id: true, email: true, employerId: true, fullName: true },
     })
 
-    const token = signToken({ uid: admin.id, role: 'admin', eid: admin.employerId })
+    const token = signToken({ uid: admin.id, role: 'admin', eid: employer.id })
     setAuthCookie(res, token)
 
     return res.status(201).json({ ok: true, admin })
@@ -120,7 +183,8 @@ router.post('/register-admin', async (req: Request, res: Response) => {
   }
 })
 
-// POST /auth/signin (login EmployerAdminUser)
+/** ------------------------------- SIGNIN ------------------------------- */
+// POST /auth/signin
 router.post('/signin', async (req: Request, res: Response) => {
   try {
     const parsed = signinSchema.safeParse(req.body)
@@ -134,19 +198,14 @@ router.post('/signin', async (req: Request, res: Response) => {
     const ok = await bcrypt.compare(password, admin.passwordHash)
     if (!ok) return res.status(401).json({ message: 'Email atau password salah' })
 
-    // employer aktif: pakai slug bila ada, kalau tidak pakai employerId admin
-    let employer =
-      (await resolveEmployerBySlugOrLatest({ employerSlug })) ??
+    const employer =
+      (await resolveEmployer({ employerSlug })) ??
       (await prisma.employer.findUnique({
         where: { id: admin.employerId },
         select: { id: true, slug: true, displayName: true, legalName: true },
       }))
 
-    const token = signToken({
-      uid: admin.id,
-      role: 'admin',
-      eid: employer?.id ?? admin.employerId ?? null,
-    })
+    const token = signToken({ uid: admin.id, role: 'admin', eid: employer?.id ?? admin.employerId ?? null })
     setAuthCookie(res, token)
 
     return res.json({
@@ -166,14 +225,15 @@ router.post('/signin', async (req: Request, res: Response) => {
   }
 })
 
+/** ------------------------------ SIGNOUT ------------------------------ */
 // POST /auth/signout
 router.post('/signout', (_req: Request, res: Response) => {
   res.setHeader(
     'Set-Cookie',
     serialize('token', '', {
       httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      sameSite: COOKIE_SAMESITE,
+      secure: COOKIE_SECURE,
       path: '/',
       maxAge: 0,
     })
@@ -181,6 +241,7 @@ router.post('/signout', (_req: Request, res: Response) => {
   return res.status(204).end()
 })
 
+/** -------------------------------- ME --------------------------------- */
 // GET /auth/me
 router.get('/me', async (req: Request, res: Response) => {
   try {
@@ -204,16 +265,14 @@ router.get('/me', async (req: Request, res: Response) => {
     if (!admin) return res.status(401).json({ message: 'Unauthorized' })
 
     let employer = null as null | { id: string; slug: string; displayName: string | null; legalName: string | null }
-
     if (payload.eid) {
-      employer =
-        (await prisma.employer.findUnique({
-          where: { id: payload.eid },
-          select: { id: true, slug: true, displayName: true, legalName: true },
-        })) || null
+      employer = await prisma.employer.findUnique({
+        where: { id: payload.eid },
+        select: { id: true, slug: true, displayName: true, legalName: true },
+      })
     }
     if (!employer) {
-      employer = await resolveEmployerBySlugOrLatest({})
+      employer = await resolveEmployer({})
     }
 
     return res.json({ ...admin, role: payload.role, employer })
@@ -223,6 +282,7 @@ router.get('/me', async (req: Request, res: Response) => {
   }
 })
 
+/** -------------------------- SWITCH EMPLOYER --------------------------- */
 // POST /auth/switch-employer
 router.post('/switch-employer', async (req: Request, res: Response) => {
   try {
@@ -237,27 +297,12 @@ router.post('/switch-employer', async (req: Request, res: Response) => {
 
     const { employerId, employerSlug } = parsed.data
 
-    // karena admin selalu terikat ke satu employerId,
-    // kita abaikan input lain dan gunakan employerId milik admin saat ini bila tidak ada slug/id valid
-    let employer = null as { id: string; slug: string; displayName: string | null; legalName: string | null } | null
-
-    if (employerId) {
-      employer = await prisma.employer.findUnique({
-        where: { id: employerId },
+    let employer =
+      (await resolveEmployer({ employerId: employerId ?? null, employerSlug: employerSlug ?? null })) ??
+      (await prisma.employer.findUnique({
+        where: { id: (await prisma.employerAdminUser.findUnique({ where: { id: payload.uid } }))?.employerId! },
         select: { id: true, slug: true, displayName: true, legalName: true },
-      })
-    } else if (employerSlug) {
-      employer = await prisma.employer.findUnique({
-        where: { slug: employerSlug },
-        select: { id: true, slug: true, displayName: true, legalName: true },
-      })
-    } else {
-      employer =
-        (await prisma.employer.findUnique({
-          where: { id: (await prisma.employerAdminUser.findUnique({ where: { id: payload.uid } }))?.employerId! },
-          select: { id: true, slug: true, displayName: true, legalName: true },
-        })) || (await resolveEmployerBySlugOrLatest({}))
-    }
+      }))
 
     if (!employer) return res.status(404).json({ message: 'Employer tidak ditemukan' })
 
