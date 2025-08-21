@@ -10,15 +10,14 @@ const router = Router()
 
 /** ================== ENV ================== **/
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
-const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || 'lax') as
-  | 'lax' | 'none' | 'strict'
+const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || 'lax') as 'lax' | 'none' | 'strict'
 const COOKIE_SECURE =
   process.env.COOKIE_SECURE === 'true' ||
   (process.env.NODE_ENV === 'production' && COOKIE_SAMESITE === 'none')
 
 /** ================= JWT helpers ================= **/
 type JWTPayload = {
-  uid: string            // employerAdminUser.id
+  uid: string            // EmployerAdminUser.id
   role: 'admin'
   eid?: string | null    // employerId aktif (opsional)
 }
@@ -82,7 +81,7 @@ const registerAdminSchema = z.object({
   fullName: z.string().min(2).max(100).optional(),
 })
 
-/** signup yang fleksibel: employerId/slug opsional */
+/** signup fleksibel: employerId/slug opsional */
 const signupSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
@@ -103,7 +102,7 @@ router.get('/', (_req, res) => {
   res.json({ message: 'Auth route works!' })
 })
 
-/** ------------ SIGNUP (alias ke register-admin, tapi flexible) ------------ */
+/** ---------------- SIGNUP (alias ke register-admin, tapi flexible) ---------------- */
 // POST /auth/signup
 router.post('/signup', async (req: Request, res: Response) => {
   try {
@@ -128,7 +127,7 @@ router.post('/signup', async (req: Request, res: Response) => {
         isOwner: true,
         agreedTosAt: new Date(),
       },
-      select: { id: true, email: true, employerId: true, fullName: true },
+      select: { id: true, email: true, employerId: true, fullName: true, isOwner: true },
     })
 
     const token = signToken({ uid: admin.id, role: 'admin', eid: employer.id })
@@ -145,7 +144,7 @@ router.post('/signup', async (req: Request, res: Response) => {
   }
 })
 
-/** ------ Tetap sediakan endpoint lama: /auth/register-admin ------ */
+/** ------------------ Endpoint lama: /auth/register-admin ------------------ */
 // POST /auth/register-admin
 router.post('/register-admin', async (req: Request, res: Response) => {
   try {
@@ -170,7 +169,7 @@ router.post('/register-admin', async (req: Request, res: Response) => {
         isOwner: true,
         agreedTosAt: new Date(),
       },
-      select: { id: true, email: true, employerId: true, fullName: true },
+      select: { id: true, email: true, employerId: true, fullName: true, isOwner: true },
     })
 
     const token = signToken({ uid: admin.id, role: 'admin', eid: employer.id })
@@ -264,7 +263,7 @@ router.get('/me', async (req: Request, res: Response) => {
     })
     if (!admin) return res.status(401).json({ message: 'Unauthorized' })
 
-    let employer = null as null | { id: string; slug: string; displayName: string | null; legalName: string | null }
+    let employer: { id: string; slug: string; displayName: string | null; legalName: string | null } | null = null
     if (payload.eid) {
       employer = await prisma.employer.findUnique({
         where: { id: payload.eid },
@@ -297,7 +296,7 @@ router.post('/switch-employer', async (req: Request, res: Response) => {
 
     const { employerId, employerSlug } = parsed.data
 
-    let employer =
+    const employer =
       (await resolveEmployer({ employerId: employerId ?? null, employerSlug: employerSlug ?? null })) ??
       (await prisma.employer.findUnique({
         where: { id: (await prisma.employerAdminUser.findUnique({ where: { id: payload.uid } }))?.employerId! },
