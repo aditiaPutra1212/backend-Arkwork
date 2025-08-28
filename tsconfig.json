@@ -1,10 +1,13 @@
 {
   "compilerOptions": {
-    "moduleResolution": "node",
-    "module": "commonjs",            // or "esnext" to match your build
-    "target": "es2019",
+    "target": "ES2020",
+    "module": "CommonJS",
+    "rootDir": "src",
+    "outDir": "dist",
     "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "skipLibCheck": true             // optional but avoids 3rd‑party typing noise
-  }
+    "strict": true,
+    "skipLibCheck": true,
+    "typeRoots": ["./src/types", "./node_modules/@types"]
+  },
+  "include": ["src/**/*.ts", "src/types/**/*.d.ts"]
 }
