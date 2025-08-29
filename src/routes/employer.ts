@@ -1,13 +1,19 @@
-// src/routes/employer.ts
 import { Router, Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { parse as parseCookie } from 'cookie';
 import path from 'node:path';
 import fs from 'node:fs';
 import multer from 'multer';
+
 import {
-  Step1Schema, Step2Schema, Step3Schema, Step4Schema, Step5Schema, Step5Input,
+  Step1Schema,
+  Step2Schema,
+  Step3Schema,
+  Step4Schema,
+  Step5Schema,
+  Step5Input,
 } from '../validators/employer';
+
 import {
   checkAvailability,
   createAccount,
@@ -16,6 +22,7 @@ import {
   createDraftJob,
   submitVerification,
 } from '../services/employer';
+
 import { prisma } from '../lib/prisma';
 
 export const employerRouter = Router();
@@ -142,7 +149,24 @@ employerRouter.post('/step1', async (req, res, next) => {
 employerRouter.post('/step2', async (req, res, next) => {
   try {
     const parsed = Step2Schema.parse(req.body);
-    const { employerId, ...profile } = parsed;
+    const { employerId } = parsed;
+
+    // pilih hanya field yang ada di EmployerProfile
+    const profile = {
+      industry: parsed.industry,
+      size: parsed.size,
+      foundedYear: parsed.foundedYear,
+      about: parsed.about,
+      hqCity: parsed.hqCity,
+      hqCountry: parsed.hqCountry,
+      logoUrl: parsed.logoUrl,
+      bannerUrl: parsed.bannerUrl,
+      linkedin: parsed.linkedin,
+      instagram: parsed.instagram,
+      twitter: parsed.twitter,
+      // NOTE: facebook/youtube/website yang mungkin dikirim frontend akan diabaikan
+    };
+
     const data = await upsertProfile(employerId, profile);
     res.json({ ok: true, data, next: '/api/employers/step3' });
   } catch (e: any) {
@@ -180,7 +204,7 @@ employerRouter.post('/step5', async (req, res, next) => {
     const data = await submitVerification(
       parsed.employerId,
       parsed.note,
-      parsed.files as { url: string; type?: string }[],
+      (parsed.files || []).filter((f) => !!f?.url) as { url: string; type?: string }[],
     );
 
     let slug: string | null = null;
@@ -206,8 +230,6 @@ employerRouter.post('/step5', async (req, res, next) => {
 });
 
 /* --------- EMPLOYER UTILITY --------- */
-
-// ✅ Endpoint ini sekarang BALIKIN admin.email
 employerRouter.get('/me', async (req: Request, res: Response) => {
   const auth = getEmployerAuth(req);
   if (!auth) return res.status(401).json({ message: 'Unauthorized' });
@@ -218,7 +240,6 @@ employerRouter.get('/me', async (req: Request, res: Response) => {
   });
   if (!employer) return res.status(404).json({ message: 'Employer not found' });
 
-  // ---- ambil email admin (GANTI nama model jika berbeda) ----
   const admin = await prisma.employerAdminUser.findUnique({
     where: { id: auth.adminUserId },
     select: { id: true, email: true, fullName: true, isOwner: true },

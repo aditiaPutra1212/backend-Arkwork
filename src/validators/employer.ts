@@ -1,34 +1,32 @@
-// src/validators/employer.ts
 import { z } from 'zod';
 import { $Enums } from '@prisma/client';
 
 /* ================= Helpers ================= */
 
-// string opsional: trim lalu ubah '' => undefined
+/** Trim string ('' -> undefined) */
 const optionalTrimmedString = z
-  .string()
-  .transform((v) => (typeof v === 'string' ? v.trim() : v))
-  .optional()
-  .or(z.literal('').transform(() => undefined));
+  .union([z.string(), z.undefined(), z.null()])
+  .transform((v) => (typeof v === 'string' ? v.trim() : undefined))
+  .optional();
 
-// URL opsional yang fleksibel:
-// - '' dianggap undefined (tidak error)
-// - jika diisi tanpa http/https -> otomatis prepend 'https://'
-// - validasi akhir tetap butuh pola URL dasar (tanpa spasi)
+/** URL opsional & fleksibel:
+ * - '' / null / undefined => undefined
+ * - tanpa http/https => otomatis `https://`
+ * - izinkan `data:` (untuk logo/banner)
+ */
 const optionalUrl = z
-  .string()
-  .transform((v) => (typeof v === 'string' ? v.trim() : v))
-  .optional()
-  .or(z.literal('').transform(() => undefined))
-  .transform((v) => {
+  .union([z.string(), z.undefined(), z.null()])
+  .transform((raw) => {
+    const v = (typeof raw === 'string' ? raw.trim() : '') || '';
     if (!v) return undefined;
-    // auto prepend https:// bila user tidak tulis protokol
-    if (!/^https?:\/\//i.test(v)) return `https://${v}`;
-    return v;
+    if (/^data:/i.test(v)) return v; // data URL (img base64) untuk logo/banner
+    const hasProto = /^https?:\/\//i.test(v);
+    const s = hasProto ? v : `https://${v}`;
+    // validasi ringan (tanpa \s)
+    if (!/^https?:\/\/[^\s]+$/i.test(s)) return undefined;
+    return s;
   })
-  .refine((v) => !v || /^https?:\/\/[^\s]+$/.test(v), {
-    message: 'URL tidak valid',
-  });
+  .optional();
 
 /* ================ Step 1: Akun & Perusahaan ================ */
 export const Step1Schema = z
@@ -39,7 +37,6 @@ export const Step1Schema = z
     website: optionalUrl, // opsional & fleksibel
     password: z.string().min(8, 'Password minimal 8 karakter'),
     confirmPassword: z.string().min(8, 'Password minimal 8 karakter'),
-    // harus true
     agree: z.boolean().refine((v) => v === true, {
       message: 'Anda harus menyetujui syarat & ketentuan',
     }),
@@ -47,31 +44,46 @@ export const Step1Schema = z
   .refine((v) => v.password === v.confirmPassword, {
     message: 'Passwords do not match',
     path: ['confirmPassword'],
-  });
+  })
+  // biar field asing tidak bikin error
+  .passthrough();
 
 /* ================ Step 2: Profil Perusahaan ================ */
-/* Catatan: disesuaikan dengan Prisma:
-   EmployerProfile: { industry, size, foundedYear, about, logoUrl, bannerUrl, hqCity, hqCountry, linkedin, twitter, instagram }
-   (tidak ada facebook/youtube di schema Prisma saat ini)
-*/
-export const Step2Schema = z.object({
-  employerId: z.string().uuid('employerId harus UUID'),
-  industry: optionalTrimmedString,
-  size: z.nativeEnum($Enums.CompanySize).optional(),
-  foundedYear: z
-    .preprocess((v) => (typeof v === 'string' ? Number(v) : v), z.number().int().gte(1800).lte(new Date().getFullYear()))
-    .optional(),
-  about: z.string().max(5000, 'Maks 5000 karakter').optional(),
-  hqCity: optionalTrimmedString,
-  hqCountry: optionalTrimmedString,
-  logoUrl: optionalUrl,
-  bannerUrl: optionalUrl,
+/** Diselaraskan dengan kolom EmployerProfile di Prisma:
+ *  industry, size, foundedYear, about, logoUrl, bannerUrl,
+ *  hqCity, hqCountry, linkedin, instagram, twitter
+ */
+export const Step2Schema = z
+  .object({
+    employerId: z.string().uuid('employerId harus UUID'),
+    industry: optionalTrimmedString,
+    size: z.nativeEnum($Enums.CompanySize).optional(),
+    foundedYear: z
+      .union([z.string(), z.number()])
+      .transform((v) => (typeof v === 'string' ? Number(v) : v))
+      .refine((n) => !n || (Number.isInteger(n) && n >= 1800 && n <= new Date().getFullYear()), {
+        message: 'Tahun berdiri tidak valid',
+      })
+      .optional(),
+    about: z.string().max(5000, 'Maks 5000 karakter').optional(),
 
-  // social (hanya yang ada di Prisma)
-  linkedin: optionalUrl,
-  instagram: optionalUrl,
-  twitter: optionalUrl,
-});
+    hqCity: optionalTrimmedString,
+    hqCountry: optionalTrimmedString,
+
+    logoUrl: optionalUrl,   // http(s) atau data:
+    bannerUrl: optionalUrl,
+
+    // sosial (yang ada di Prisma)
+    linkedin: optionalUrl,
+    instagram: optionalUrl,
+    twitter: optionalUrl,
+
+    // frontend bisa kirim ekstra (facebook/youtube/website), kita terima tapi diabaikan
+    facebook: optionalUrl,
+    youtube: optionalUrl,
+    website: optionalUrl,
+  })
+  .passthrough();
 
 /* ================ Step 3: Paket/Plan ================ */
 export const Step3Schema = z.object({
@@ -95,14 +107,11 @@ export const Step5Schema = z.object({
   files: z
     .array(
       z.object({
-        url: optionalUrl.transform((v) => {
-          // untuk file bukti, tetap wajib URL jika ada item
-          // kalau ingin benar-benar opsional, hapus refine di bawah
-          return v;
-        }),
+        url: optionalUrl,         // opsional; kalau undefined itemnya bisa di-skip di service
         type: optionalTrimmedString,
       })
     )
+    .optional()
     .default([]),
 });
 

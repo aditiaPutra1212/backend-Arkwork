@@ -1,7 +1,5 @@
-// backend/src/services/employer.ts
 import { prisma } from '../lib/prisma';
 import { z } from 'zod';
-// import { OnboardingStep, EmployerStatus } from '@prisma/client';
 
 /* ======================= Helpers ======================= */
 const slugify = (s: string) =>
@@ -27,10 +25,11 @@ async function ensureUniqueSlug(base: string): Promise<string> {
   }
 }
 
-/* ---------- URL normalizer: tambah https:// bila hilang & validasi ---------- */
+/* ---------- URL normalizer: tambah https://; izinkan data: ---------- */
 function normalizeUrlLoose(v?: unknown): string | undefined {
   const raw = String(v ?? '').trim();
   if (!raw) return undefined;
+  if (/^data:/i.test(raw)) return raw; // data URL (logo/banner)
   let s = raw;
   if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
   try {
@@ -57,18 +56,16 @@ const CreateAccountInput = z.object({
   companyName: z.string().min(2),
   displayName: z.string().min(2),
   email: z.string().email(),
-  // longgar: auto prefix https:// & abaikan jika invalid
   website: LooseUrl,
   password: z.string().min(8),
 });
 
 const UpsertProfileInput = z.object({
   industry: z.string().optional(),
-  size: z.any().optional(), // kalau mau ketat: z.nativeEnum(CompanySize)
+  size: z.any().optional(),
   foundedYear: z.number().int().optional(),
   about: z.string().optional(),
-  // semua URL dibuat longgar
-  logoUrl: LooseUrl,
+  logoUrl: LooseUrl,   // http(s) atau data:
   bannerUrl: LooseUrl,
   hqCity: z.string().optional(),
   hqCountry: z.string().optional(),
@@ -96,8 +93,7 @@ const SubmitVerificationInput = z.object({
   files: z
     .array(
       z.object({
-        // gunakan helper longgar; unwrap agar outputnya string | undefined
-        url: LooseUrl.unwrap(),
+        url: LooseUrl.unwrap(),      // string | undefined
         type: z.string().optional(),
       })
     )
@@ -129,8 +125,6 @@ export async function checkAvailability(params: { slug?: string; email?: string 
 
 /**
  * createAccount
- * Membuat Employer + EmployerAdminUser di dalam transaksi.
- * Mengembalikan { employerId, slug }.
  */
 export async function createAccount(input: {
   companyName: string;
@@ -164,8 +158,8 @@ export async function createAccount(input: {
         legalName: data.companyName,
         displayName: data.displayName,
         website: data.website ?? null,
-        status: 'draft', // EmployerStatus.draft
-        onboardingStep: 'PACKAGE', // atau 'PROFILE' sesuai flow
+        status: 'draft',
+        onboardingStep: 'PACKAGE',
       },
       select: { id: true },
     });
@@ -189,7 +183,6 @@ export async function createAccount(input: {
 
 /**
  * upsertProfile
- * Menyimpan EmployerProfile lalu update onboardingStep -> PACKAGE.
  */
 export async function upsertProfile(employerId: string, profile: unknown) {
   const body = UpsertProfileInput.parse(profile);
@@ -212,7 +205,6 @@ export async function upsertProfile(employerId: string, profile: unknown) {
 
 /**
  * choosePlan
- * Buat subscription aktif untuk employer & set onboardingStep -> JOB.
  */
 export async function choosePlan(employerId: string, planSlug: string) {
   const { employerId: eid, planSlug: pslug } = ChoosePlanInput.parse({
@@ -227,7 +219,6 @@ export async function choosePlan(employerId: string, planSlug: string) {
   if (!plan) throw Object.assign(new Error('Plan not found'), { status: 404 });
 
   await prisma.$transaction(async (tx) => {
-    // Jika sudah ada subscription aktif untuk plan yang sama, skip
     const exist = await tx.subscription.findFirst({
       where: { employerId: eid, planId: plan.id, status: 'active' },
       select: { id: true },
@@ -254,7 +245,6 @@ export async function choosePlan(employerId: string, planSlug: string) {
 
 /**
  * createDraftJob
- * Membuat satu draft job dan update onboardingStep -> VERIFY.
  */
 export async function createDraftJob(
   employerId: string,
@@ -289,7 +279,6 @@ export async function createDraftJob(
 
 /**
  * submitVerification
- * Membuat VerificationRequest (+files) dan set onboardingStep -> DONE.
  */
 export async function submitVerification(
   employerId: string,
@@ -307,7 +296,7 @@ export async function submitVerification(
     if (body.files?.length) {
       await tx.verificationFile.createMany({
         data: body.files
-          .map((f) => ({ ...f, url: normalizeUrlLoose(f.url) })) // normalkan lagi untuk berjaga
+          .map((f) => ({ ...f, url: normalizeUrlLoose(f.url) }))
           .filter((f): f is { url: string; type?: string } => !!f.url)
           .map((f) => ({
             verificationId: req.id,
