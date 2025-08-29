@@ -12,7 +12,7 @@ function makeCookie(id: string) {
   return serializeCookie(EMP_COOKIE, id, {
     httpOnly: true,
     secure: isProd,          // di localhost otomatis false
-    sameSite: 'none',         // aman untuk http://localhost
+    sameSite: isProd ? 'none' : 'lax',        // aman untuk http://localhost
     path: '/',
     maxAge: SESSION_HOURS * 60 * 60,
   });
@@ -88,6 +88,8 @@ router.post('/signin', async (req, res) => {
 /**
  * POST /api/employers/auth/signout
  */
+const isProd = process.env.NODE_ENV === 'production';
+
 router.post('/signout', async (req, res) => {
   try {
     const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
@@ -104,7 +106,7 @@ router.post('/signout', async (req, res) => {
     serializeCookie(EMP_COOKIE, '', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
+      sameSite: isProd ? 'none' : 'lax',
       path: '/',
       maxAge: 0,
     })
