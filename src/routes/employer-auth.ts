@@ -12,7 +12,7 @@ function makeCookie(id: string) {
   return serializeCookie(EMP_COOKIE, id, {
     httpOnly: true,
     secure: isProd,          // di localhost otomatis false
-    sameSite: 'lax',         // aman untuk http://localhost
+    sameSite: 'none',         // aman untuk http://localhost
     path: '/',
     maxAge: SESSION_HOURS * 60 * 60,
   });
