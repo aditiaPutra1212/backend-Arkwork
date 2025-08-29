@@ -1,32 +1,33 @@
+// src/routes/employer-auth.ts
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import bcrypt from 'bcryptjs';
 import { parse as parseCookie, serialize as serializeCookie } from 'cookie';
-import jwt from 'jsonwebtoken';
 
 const EMP_COOKIE = 'emp_session';
-const EMP_JWT = 'emp_token';
 const SESSION_HOURS = 12;
-const isProd = process.env.NODE_ENV === 'production';
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
-function makeSessionCookie(id: string) {
+// 🔐 Cookie helper that works cross-site (Vercel <-> Railway)
+function makeCookie(id: string) {
+  const isProd = process.env.NODE_ENV === 'production';
   return serializeCookie(EMP_COOKIE, id, {
     httpOnly: true,
-    secure: isProd,      // wajib true kalau SameSite=None
-    sameSite: 'none',
+    secure: isProd,            // MUST be true in prod with SameSite=None
+    sameSite: isProd ? 'none' : 'lax',
     path: '/',
     maxAge: SESSION_HOURS * 60 * 60,
   });
 }
 
-function makeJwtCookie(token: string) {
-  return serializeCookie(EMP_JWT, token, {
+// Helper to clear cookie consistently (must match attrs)
+function clearCookie() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return serializeCookie(EMP_COOKIE, '', {
     httpOnly: true,
     secure: isProd,
-    sameSite: 'none',
+    sameSite: isProd ? 'none' : 'lax',
     path: '/',
-    maxAge: SESSION_HOURS * 60 * 60,
+    maxAge: 0,
   });
 }
 
@@ -34,7 +35,7 @@ const router = Router();
 
 /**
  * POST /api/employers/auth/signin
- * body: { usernameOrEmail|email, password }
+ * body: { usernameOrEmail, password } ATAU { email, password }
  */
 router.post('/signin', async (req, res) => {
   const usernameOrEmail = req.body?.usernameOrEmail ?? req.body?.email;
@@ -45,8 +46,15 @@ router.post('/signin', async (req, res) => {
 
   const admin = await prisma.employerAdminUser.findFirst({
     where: { OR: [{ email: usernameOrEmail }, { fullName: usernameOrEmail }] },
-    select: { id: true, email: true, passwordHash: true, employerId: true },
+    select: {
+      id: true,
+      email: true,
+      passwordHash: true,
+      employerId: true,
+      employer: { select: { id: true, slug: true, displayName: true } },
+    },
   });
+
   if (!admin || !admin.passwordHash) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
 
   const ok = await bcrypt.compare(password, admin.passwordHash);
@@ -72,21 +80,21 @@ router.post('/signin', async (req, res) => {
     select: { id: true },
   });
 
-  // 🔐 JWT untuk endpoint yang membaca emp_token
-  const token = jwt.sign(
-    { uid: admin.id, role: 'employer', eid: employer.id },
-    JWT_SECRET,
-    { expiresIn: `${SESSION_HOURS}h` }
-  );
-
-  res.setHeader('Set-Cookie', [makeSessionCookie(session.id), makeJwtCookie(token)]);
-  return res.json({ ok: true, admin: { id: admin.id, email: admin.email }, employer });
+  // ✅ set cross-site cookie
+  res.setHeader('Set-Cookie', makeCookie(session.id));
+  return res.json({
+    ok: true,
+    admin: { id: admin.id, email: admin.email },
+    employer,
+  });
 });
 
-/** POST /api/employers/auth/signout */
+/**
+ * POST /api/employers/auth/signout
+ */
 router.post('/signout', async (req, res) => {
   try {
-    const { [EMP_COOKIE]: sid } = parseCookie(req.headers.cookie || '');
+    const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
     if (sid) {
       await prisma.session.updateMany({
         where: { id: sid, revokedAt: null },
@@ -94,22 +102,23 @@ router.post('/signout', async (req, res) => {
       });
     }
   } catch {}
-  res.setHeader('Set-Cookie', [
-    serializeCookie(EMP_COOKIE, '', { httpOnly: true, secure: isProd, sameSite: 'none', path: '/', maxAge: 0 }),
-    serializeCookie(EMP_JWT, '', { httpOnly: true, secure: isProd, sameSite: 'none', path: '/', maxAge: 0 }),
-  ]);
+  // ✅ clear cookie with identical attrs
+  res.setHeader('Set-Cookie', clearCookie());
   res.status(204).end();
 });
 
-/** GET /api/employers/auth/me */
+/**
+ * GET /api/employers/auth/me
+ */
 router.get('/me', async (req, res) => {
-  const { [EMP_COOKIE]: sid } = parseCookie(req.headers.cookie || '');
+  const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
   if (!sid) return res.status(401).json({ error: 'NO_SESSION' });
 
   const s = await prisma.session.findUnique({
     where: { id: sid },
     select: { employerId: true, revokedAt: true, expiresAt: true },
   });
+
   if (!s || s.revokedAt || (s.expiresAt && s.expiresAt < new Date()) || !s.employerId) {
     return res.status(401).json({ error: 'NO_SESSION' });
   }
@@ -128,7 +137,12 @@ router.get('/me', async (req, res) => {
 
   if (!employer) return res.status(404).json({ error: 'EMPLOYER_NOT_FOUND' });
 
-  return res.json({ ok: true, role: 'employer', employer, admin: admin ?? null });
+  return res.json({
+    ok: true,
+    role: 'employer',
+    employer,
+    admin: admin ?? { id: 'employer-admin', email: null, fullName: null, isOwner: undefined },
+  });
 });
 
 export default router;
