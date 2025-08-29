@@ -1,7 +1,6 @@
 // backend/src/services/employer.ts
 import { prisma } from '../lib/prisma';
 import { z } from 'zod';
-// Jika enum Prisma sudah di-generate, boleh import untuk type-safety kuat:
 // import { OnboardingStep, EmployerStatus } from '@prisma/client';
 
 /* ======================= Helpers ======================= */
@@ -28,6 +27,26 @@ async function ensureUniqueSlug(base: string): Promise<string> {
   }
 }
 
+/* ---------- URL normalizer: tambah https:// bila hilang & validasi ---------- */
+function normalizeUrlLoose(v?: unknown): string | undefined {
+  const raw = String(v ?? '').trim();
+  if (!raw) return undefined;
+  let s = raw;
+  if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
+  try {
+    const u = new URL(s);
+    return u.toString();
+  } catch {
+    return undefined; // abaikan bila tetap tidak valid
+  }
+}
+
+/* ---------- Zod helper untuk URL longgar ---------- */
+const LooseUrl = z
+  .union([z.string(), z.undefined(), z.null()])
+  .transform((v) => normalizeUrlLoose(v ?? undefined))
+  .optional();
+
 /* ======================= Schemas (service-level) ======================= */
 const CheckAvailabilityInput = z.object({
   slug: z.string().optional(),
@@ -38,22 +57,24 @@ const CreateAccountInput = z.object({
   companyName: z.string().min(2),
   displayName: z.string().min(2),
   email: z.string().email(),
-  website: z.string().url().optional(),
+  // longgar: auto prefix https:// & abaikan jika invalid
+  website: LooseUrl,
   password: z.string().min(8),
 });
 
 const UpsertProfileInput = z.object({
   industry: z.string().optional(),
-  size: z.any().optional(), // jika mau ketat: z.nativeEnum(CompanySize).optional()
+  size: z.any().optional(), // kalau mau ketat: z.nativeEnum(CompanySize)
   foundedYear: z.number().int().optional(),
   about: z.string().optional(),
-  logoUrl: z.string().url().optional(),
-  bannerUrl: z.string().url().optional(),
+  // semua URL dibuat longgar
+  logoUrl: LooseUrl,
+  bannerUrl: LooseUrl,
   hqCity: z.string().optional(),
   hqCountry: z.string().optional(),
-  linkedin: z.string().url().optional(),
-  instagram: z.string().url().optional(),
-  twitter: z.string().url().optional(),
+  linkedin: LooseUrl,
+  instagram: LooseUrl,
+  twitter: LooseUrl,
 });
 
 const ChoosePlanInput = z.object({
@@ -73,7 +94,13 @@ const SubmitVerificationInput = z.object({
   employerId: z.string().uuid(),
   note: z.string().optional(),
   files: z
-    .array(z.object({ url: z.string().url(), type: z.string().optional() }))
+    .array(
+      z.object({
+        // gunakan helper longgar; unwrap agar outputnya string | undefined
+        url: LooseUrl.unwrap(),
+        type: z.string().optional(),
+      })
+    )
     .optional(),
 });
 
@@ -137,8 +164,8 @@ export async function createAccount(input: {
         legalName: data.companyName,
         displayName: data.displayName,
         website: data.website ?? null,
-        status: 'draft', // atau EmployerStatus.draft
-        onboardingStep: 'PACKAGE', // start ke step berikut (atau 'PROFILE' sesuai flow)
+        status: 'draft', // EmployerStatus.draft
+        onboardingStep: 'PACKAGE', // atau 'PROFILE' sesuai flow
       },
       select: { id: true },
     });
@@ -162,7 +189,7 @@ export async function createAccount(input: {
 
 /**
  * upsertProfile
- * Menyimpan EmployerProfile lalu update onboardingStep -> PACKAGE (berikutnya pilih paket).
+ * Menyimpan EmployerProfile lalu update onboardingStep -> PACKAGE.
  */
 export async function upsertProfile(employerId: string, profile: unknown) {
   const body = UpsertProfileInput.parse(profile);
@@ -176,7 +203,7 @@ export async function upsertProfile(employerId: string, profile: unknown) {
   await prisma.employer
     .update({
       where: { id: employerId },
-      data: { onboardingStep: 'PACKAGE' }, // OnboardingStep.PACKAGE
+      data: { onboardingStep: 'PACKAGE' },
     })
     .catch(() => {});
 
@@ -186,7 +213,6 @@ export async function upsertProfile(employerId: string, profile: unknown) {
 /**
  * choosePlan
  * Buat subscription aktif untuk employer & set onboardingStep -> JOB.
- * Mencegah duplikat subscription aktif untuk plan yang sama.
  */
 export async function choosePlan(employerId: string, planSlug: string) {
   const { employerId: eid, planSlug: pslug } = ChoosePlanInput.parse({
@@ -211,7 +237,7 @@ export async function choosePlan(employerId: string, planSlug: string) {
         data: {
           employerId: eid,
           planId: plan.id,
-          status: 'active', // atau enum
+          status: 'active',
         },
         select: { id: true },
       });
@@ -219,7 +245,7 @@ export async function choosePlan(employerId: string, planSlug: string) {
 
     await tx.employer.update({
       where: { id: eid },
-      data: { onboardingStep: 'JOB' }, // OnboardingStep.JOB
+      data: { onboardingStep: 'JOB' },
     });
   });
 
@@ -252,7 +278,7 @@ export async function createDraftJob(
 
     await tx.employer.update({
       where: { id: body.employerId },
-      data: { onboardingStep: 'VERIFY' }, // OnboardingStep.VERIFY
+      data: { onboardingStep: 'VERIFY' },
     });
 
     return j;
@@ -280,17 +306,20 @@ export async function submitVerification(
 
     if (body.files?.length) {
       await tx.verificationFile.createMany({
-        data: body.files.map((f) => ({
-          verificationId: req.id,
-          fileUrl: f.url,
-          fileType: f.type,
-        })),
+        data: body.files
+          .map((f) => ({ ...f, url: normalizeUrlLoose(f.url) })) // normalkan lagi untuk berjaga
+          .filter((f): f is { url: string; type?: string } => !!f.url)
+          .map((f) => ({
+            verificationId: req.id,
+            fileUrl: f.url,
+            fileType: f.type,
+          })),
       });
     }
 
     await tx.employer.update({
       where: { id: body.employerId },
-      data: { onboardingStep: 'DONE' }, // OnboardingStep.DONE
+      data: { onboardingStep: 'DONE' },
     });
 
     return req;
