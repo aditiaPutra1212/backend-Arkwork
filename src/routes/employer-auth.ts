@@ -1,18 +1,30 @@
-// src/routes/employer-auth.ts
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import bcrypt from 'bcryptjs';
 import { parse as parseCookie, serialize as serializeCookie } from 'cookie';
+import jwt from 'jsonwebtoken';
 
 const EMP_COOKIE = 'emp_session';
+const EMP_JWT = 'emp_token';
 const SESSION_HOURS = 12;
+const isProd = process.env.NODE_ENV === 'production';
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
-function makeCookie(id: string) {
-  const isProd = process.env.NODE_ENV === 'production';
+function makeSessionCookie(id: string) {
   return serializeCookie(EMP_COOKIE, id, {
     httpOnly: true,
-    secure: isProd,          // di localhost otomatis false
-    sameSite: isProd ? 'none' : 'lax',        // aman untuk http://localhost
+    secure: isProd,      // wajib true kalau SameSite=None
+    sameSite: 'none',
+    path: '/',
+    maxAge: SESSION_HOURS * 60 * 60,
+  });
+}
+
+function makeJwtCookie(token: string) {
+  return serializeCookie(EMP_JWT, token, {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: 'none',
     path: '/',
     maxAge: SESSION_HOURS * 60 * 60,
   });
@@ -22,7 +34,7 @@ const router = Router();
 
 /**
  * POST /api/employers/auth/signin
- * body: { usernameOrEmail, password } ATAU { email, password }
+ * body: { usernameOrEmail|email, password }
  */
 router.post('/signin', async (req, res) => {
   const usernameOrEmail = req.body?.usernameOrEmail ?? req.body?.email;
@@ -31,42 +43,25 @@ router.post('/signin', async (req, res) => {
     return res.status(400).json({ error: 'MISSING_CREDENTIALS' });
   }
 
-  // cari admin user employer (by email atau nama lengkap)
   const admin = await prisma.employerAdminUser.findFirst({
-    where: {
-      OR: [
-        { email: usernameOrEmail },
-        { fullName: usernameOrEmail },
-      ],
-    },
-    select: {
-      id: true,
-      email: true,
-      passwordHash: true,
-      employerId: true,
-      employer: { select: { id: true, slug: true, displayName: true } },
-    },
+    where: { OR: [{ email: usernameOrEmail }, { fullName: usernameOrEmail }] },
+    select: { id: true, email: true, passwordHash: true, employerId: true },
   });
-
-  if (!admin || !admin.passwordHash) {
-    return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
-  }
+  if (!admin || !admin.passwordHash) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
 
   const ok = await bcrypt.compare(password, admin.passwordHash);
   if (!ok) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
 
-  // pastikan employer ada
   const employer = await prisma.employer.findUnique({
     where: { id: admin.employerId },
     select: { id: true, slug: true, displayName: true },
   });
   if (!employer) return res.status(401).json({ error: 'NO_EMPLOYER' });
 
-  // buat session TANPA userId (null) + employerId DIISI (hindari FK ke User)
   const now = Date.now();
   const session = await prisma.session.create({
     data: {
-      userId: null,                 // penting: null supaya tidak kena FK ke User
+      userId: null,
       employerId: employer.id,
       createdAt: new Date(now),
       lastSeenAt: new Date(now),
@@ -77,22 +72,21 @@ router.post('/signin', async (req, res) => {
     select: { id: true },
   });
 
-  res.setHeader('Set-Cookie', makeCookie(session.id));
-  return res.json({
-    ok: true,
-    admin: { id: admin.id, email: admin.email }, // opsional dikembalikan di response signin
-    employer,
-  });
+  // 🔐 JWT untuk endpoint yang membaca emp_token
+  const token = jwt.sign(
+    { uid: admin.id, role: 'employer', eid: employer.id },
+    JWT_SECRET,
+    { expiresIn: `${SESSION_HOURS}h` }
+  );
+
+  res.setHeader('Set-Cookie', [makeSessionCookie(session.id), makeJwtCookie(token)]);
+  return res.json({ ok: true, admin: { id: admin.id, email: admin.email }, employer });
 });
 
-/**
- * POST /api/employers/auth/signout
- */
-const isProd = process.env.NODE_ENV === 'production';
-
+/** POST /api/employers/auth/signout */
 router.post('/signout', async (req, res) => {
   try {
-    const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
+    const { [EMP_COOKIE]: sid } = parseCookie(req.headers.cookie || '');
     if (sid) {
       await prisma.session.updateMany({
         where: { id: sid, revokedAt: null },
@@ -100,37 +94,22 @@ router.post('/signout', async (req, res) => {
       });
     }
   } catch {}
-  // hapus cookie
-  res.setHeader(
-    'Set-Cookie',
-    serializeCookie(EMP_COOKIE, '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: isProd ? 'none' : 'lax',
-      path: '/',
-      maxAge: 0,
-    })
-  );
+  res.setHeader('Set-Cookie', [
+    serializeCookie(EMP_COOKIE, '', { httpOnly: true, secure: isProd, sameSite: 'none', path: '/', maxAge: 0 }),
+    serializeCookie(EMP_JWT, '', { httpOnly: true, secure: isProd, sameSite: 'none', path: '/', maxAge: 0 }),
+  ]);
   res.status(204).end();
 });
 
-/**
- * GET /api/employers/auth/me
- * Validasi cookie session → kembalikan employer + admin (dengan email)
- */
+/** GET /api/employers/auth/me */
 router.get('/me', async (req, res) => {
-  const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
+  const { [EMP_COOKIE]: sid } = parseCookie(req.headers.cookie || '');
   if (!sid) return res.status(401).json({ error: 'NO_SESSION' });
 
   const s = await prisma.session.findUnique({
     where: { id: sid },
-    select: {
-      employerId: true,
-      revokedAt: true,
-      expiresAt: true,
-    },
+    select: { employerId: true, revokedAt: true, expiresAt: true },
   });
-
   if (!s || s.revokedAt || (s.expiresAt && s.expiresAt < new Date()) || !s.employerId) {
     return res.status(401).json({ error: 'NO_SESSION' });
   }
@@ -142,19 +121,14 @@ router.get('/me', async (req, res) => {
     }),
     prisma.employerAdminUser.findFirst({
       where: { employerId: s.employerId },
-      orderBy: { isOwner: 'desc' }, // utamakan owner jika ada
+      orderBy: { isOwner: 'desc' },
       select: { id: true, email: true, fullName: true, isOwner: true },
     }),
   ]);
 
   if (!employer) return res.status(404).json({ error: 'EMPLOYER_NOT_FOUND' });
 
-  return res.json({
-    ok: true,
-    role: 'employer',
-    employer,
-    admin: admin ?? { id: 'employer-admin', email: null, fullName: null, isOwner: undefined },
-  });
+  return res.json({ ok: true, role: 'employer', employer, admin: admin ?? null });
 });
 
 export default router;
