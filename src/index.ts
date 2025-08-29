@@ -1,3 +1,4 @@
+// src/index.ts
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -27,26 +28,62 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const DEFAULT_PORT = Number(process.env.PORT || 4000);
 
 /* ---------------------------- FRONTEND ORIGIN ---------------------------- */
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
+/**
+ * Bisa isi banyak origin di ENV, pisah koma, contoh:
+ * FRONTEND_ORIGIN=https://arkwork2.vercel.app,https://app.domainmu.com
+ * Default tetap mengizinkan localhost:3000 & 127.0.0.1:3000
+ */
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '';
 const defaultAllowed = ['http://localhost:3000', 'http://127.0.0.1:3000'];
-const envAllowed = FRONTEND_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
+const envAllowed = FRONTEND_ORIGIN
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// helper ambil host dari origin
+function hostOf(u: string) {
+  try {
+    return new URL(u).host;
+  } catch {
+    return '';
+  }
+}
+
+// wildcard: izinkan subdomain vercel (*.vercel.app). Hapus regex ini bila tidak diperlukan.
+const allowByHostRx: RegExp[] = [
+  /(^|\.)vercel\.app$/i, // *.vercel.app
+  // Tambah regex lain jika perlu, contoh:
+  // /(^|\.)your-custom-domain\.com$/i,
+];
+
+// exact allow list (tanpa wildcard)
 const allowedOrigins = Array.from(new Set([...defaultAllowed, ...envAllowed]));
 
 const corsOptions: cors.CorsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true); // server-to-server / tools
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    return cb(new Error(`Not allowed by CORS: ${origin}`));
-  },
-  credentials: true,
+  credentials: true, // penting untuk cookie session
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Employer-Id'],
+  origin(origin, cb) {
+    // server-to-server / curl / Postman (tanpa Origin) -> allow
+    if (!origin) return cb(null, true);
+
+    // exact match (ENV + default)
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+
+    // wildcard match berdasarkan host
+    const host = hostOf(origin);
+    if (host && allowByHostRx.some((rx) => rx.test(host))) return cb(null, true);
+
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
 };
 
 app.use(cors(corsOptions));
+// Preflight cepat
 app.options('*', cors(corsOptions));
 
 /* --------------------------- Basic Middlewares --------------------------- */
+// Wajib untuk behind proxy (Heroku/Render/Nginx) agar secure cookies bekerja benar di HTTPS
 if (NODE_ENV === 'production') app.set('trust proxy', 1);
 
 app.use(morgan('dev'));
@@ -87,7 +124,7 @@ app.use('/admin/tenders', adminTendersRouter);
 // Employer auth (signup/signin/signout/me)
 app.use('/api/employers/auth', employerAuthRouter);
 
-// Employer features (step1–5, profile, etc.)
+// Employer features (step1–5, profile, dll.)
 app.use('/api/employers', employerRouter);
 
 // Admin plans & payments
@@ -137,6 +174,9 @@ function startServer(startPort: number, maxTries = 10) {
     console.log(`🚀 Backend listening on http://localhost:${port}`);
     console.log(`NODE_ENV           : ${NODE_ENV}`);
     console.log(`FRONTEND_ORIGIN(s) : ${allowedOrigins.join(', ')}`);
+    console.log(
+      `Wildcard hosts     : ${allowByHostRx.length ? allowByHostRx.map((r) => r.source).join(' , ') : '(disabled)'}`
+    );
     console.log('========================================');
   });
 

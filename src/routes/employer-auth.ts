@@ -11,7 +11,7 @@ function makeCookie(id: string) {
   const isProd = process.env.NODE_ENV === 'production';
   return serializeCookie(EMP_COOKIE, id, {
     httpOnly: true,
-    secure: true,          // di localhost otomatis false
+    secure: isProd,          // di localhost otomatis false
     sameSite: 'none',         // aman untuk http://localhost
     path: '/',
     maxAge: SESSION_HOURS * 60 * 60,
