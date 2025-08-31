@@ -29,9 +29,8 @@ const DEFAULT_PORT = Number(process.env.PORT || 4000);
 
 /* ---------------------------- FRONTEND ORIGIN ---------------------------- */
 /**
- * Bisa isi banyak origin di ENV, pisah koma, contoh:
+ * ENV (comma separated):
  * FRONTEND_ORIGIN=https://arkwork2.vercel.app,https://app.domainmu.com
- * Default tetap mengizinkan localhost:3000 & 127.0.0.1:3000
  */
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '';
 const defaultAllowed = ['http://localhost:3000', 'http://127.0.0.1:3000'];
@@ -40,7 +39,6 @@ const envAllowed = FRONTEND_ORIGIN
   .map((s) => s.trim())
   .filter(Boolean);
 
-// helper ambil host dari origin
 function hostOf(u: string) {
   try {
     return new URL(u).host;
@@ -49,28 +47,20 @@ function hostOf(u: string) {
   }
 }
 
-// wildcard: izinkan subdomain vercel (*.vercel.app). Hapus regex ini bila tidak diperlukan.
-const allowByHostRx: RegExp[] = [
-  /(^|\.)vercel\.app$/i, // *.vercel.app
-  // Tambah regex lain jika perlu, contoh:
-  // /(^|\.)your-custom-domain\.com$/i,
-];
+// Izinkan subdomain vercel
+const allowByHostRx: RegExp[] = [/(\.|^)vercel\.app$/i];
 
-// exact allow list (tanpa wildcard)
+// exact list
 const allowedOrigins = Array.from(new Set([...defaultAllowed, ...envAllowed]));
 
 const corsOptions: cors.CorsOptions = {
-  credentials: true, // penting untuk cookie session
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Employer-Id'],
   origin(origin, cb) {
-    // server-to-server / curl / Postman (tanpa Origin) -> allow
-    if (!origin) return cb(null, true);
-
-    // exact match (ENV + default)
+    if (!origin) return cb(null, true); // server-to-server / Postman
     if (allowedOrigins.includes(origin)) return cb(null, true);
 
-    // wildcard match berdasarkan host
     const host = hostOf(origin);
     if (host && allowByHostRx.some((rx) => rx.test(host))) return cb(null, true);
 
@@ -79,11 +69,10 @@ const corsOptions: cors.CorsOptions = {
 };
 
 app.use(cors(corsOptions));
-// Preflight cepat
 app.options('*', cors(corsOptions));
 
 /* --------------------------- Basic Middlewares --------------------------- */
-// Wajib untuk behind proxy (Heroku/Render/Nginx) agar secure cookies bekerja benar di HTTPS
+// Penting agar cookie secure:true dianggap HTTPS di proxy (Railway/Heroku)
 if (NODE_ENV === 'production') app.set('trust proxy', 1);
 
 app.use(morgan('dev'));
@@ -96,15 +85,15 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
-// Serve static files (public/uploads)
+// Static files
 app.use('/uploads', express.static(path.join(process.cwd(), 'public', 'uploads')));
 
-/* ------------------------------ Health Checks ----------------------------- */
+/* ------------------------------ Health ------------------------------ */
 app.get('/', (_req, res) => res.send('OK'));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.get('/api/health', (_req, res) => res.json({ ok: true, status: 'healthy' }));
 
-/* --------------------------------- Routes --------------------------------- */
+/* -------------------------------- Routes ----------------------------- */
 // Auth kandidat/user
 app.use('/auth', authRouter);
 
@@ -124,7 +113,7 @@ app.use('/admin/tenders', adminTendersRouter);
 // Employer auth (signup/signin/signout/me)
 app.use('/api/employers/auth', employerAuthRouter);
 
-// Employer features (step1–5, profile, dll.)
+// Employer features
 app.use('/api/employers', employerRouter);
 
 // Admin plans & payments
@@ -134,20 +123,18 @@ app.use('/api/payments', paymentsRouter);
 // Jobs API
 app.use('/api', jobsRouter);
 
-/* -------------------------- Protected Examples --------------------------- */
+/* -------------------------- Protected Examples -------------------------- */
 app.get('/api/profile', authRequired, (req, res) => {
   res.json({ ok: true, whoami: (req as any).auth });
 });
-
 app.get('/api/employer/dashboard', employerRequired, (req, res) => {
   res.json({ ok: true, message: 'Employer-only area', whoami: (req as any).auth });
 });
-
 app.post('/api/admin/stats', adminRequired, (req, res) => {
   res.json({ ok: true, message: 'Admin-only area', whoami: (req as any).auth });
 });
 
-/* --------------------------------- 404 ----------------------------------- */
+/* --------------------------------- 404 ---------------------------------- */
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 
 /* ----------------------------- Error Handler ----------------------------- */
@@ -159,7 +146,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-/* --------------------------- Start Server w/ Port Fallback --------------------------- */
+/* ------------------------- Start Server (port fallback) ------------------- */
 function startServer(startPort: number, maxTries = 10) {
   let port = startPort;
   let tries = 0;
@@ -173,7 +160,7 @@ function startServer(startPort: number, maxTries = 10) {
     console.log('========================================');
     console.log(`🚀 Backend listening on http://localhost:${port}`);
     console.log(`NODE_ENV           : ${NODE_ENV}`);
-    console.log(`FRONTEND_ORIGIN(s) : ${allowedOrigins.join(', ')}`);
+    console.log(`FRONTEND_ORIGIN(s) : ${allowedOrigins.join(', ') || '(none)'}`);
     console.log(
       `Wildcard hosts     : ${allowByHostRx.length ? allowByHostRx.map((r) => r.source).join(' , ') : '(disabled)'}`
     );

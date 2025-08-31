@@ -7,31 +7,27 @@ import { parse as parseCookie, serialize as serializeCookie } from 'cookie';
 const EMP_COOKIE = 'emp_session';
 const SESSION_HOURS = 12;
 
-/** Buat cookie sesi employer.
- *  - Production (Railway/HTTPS): SameSite=None + Secure=true
- *  - Local dev (http://localhost): SameSite=Lax + Secure=false
- */
-function makeCookie(id: string) {
-  const isProd = process.env.NODE_ENV === 'production';
-  return serializeCookie(EMP_COOKIE, id, {
+const isProd = process.env.NODE_ENV === 'production';
+
+/** Buat cookie cross-site (Vercel <-> Railway) */
+function makeCookie(sessionId: string) {
+  return serializeCookie(EMP_COOKIE, sessionId, {
     httpOnly: true,
-    secure: isProd,                // ✅ hanya true di production
+    secure: true,                 // Wajib true untuk SameSite=None
     sameSite: isProd ? 'none' : 'lax',
     path: '/',
-    maxAge: SESSION_HOURS * 60 * 60, // detik
+    maxAge: SESSION_HOURS * 60 * 60, // DETIK (12 jam)
   });
 }
 
-/** Hapus cookie sesi dengan atribut yang konsisten. */
+/** Hapus cookie (harus cocok atributnya) */
 function clearCookie() {
-  const isProd = process.env.NODE_ENV === 'production';
   return serializeCookie(EMP_COOKIE, '', {
     httpOnly: true,
-    secure: isProd,                // ✅ match makeCookie
+    secure: true,
     sameSite: isProd ? 'none' : 'lax',
     path: '/',
-    maxAge: 0,                     // ✅ hapus segera
-    expires: new Date(0),
+    maxAge: 0,                    // <- perbaikan: 0 detik untuk delete
   });
 }
 
@@ -48,11 +44,8 @@ router.post('/signin', async (req, res) => {
     return res.status(400).json({ error: 'MISSING_CREDENTIALS' });
   }
 
-  // cari admin employer by email atau fullName (sebagai username)
   const admin = await prisma.employerAdminUser.findFirst({
-    where: {
-      OR: [{ email: usernameOrEmail }, { fullName: usernameOrEmail }],
-    },
+    where: { OR: [{ email: usernameOrEmail }, { fullName: usernameOrEmail }] },
     select: {
       id: true,
       email: true,
@@ -75,7 +68,6 @@ router.post('/signin', async (req, res) => {
   });
   if (!employer) return res.status(401).json({ error: 'NO_EMPLOYER' });
 
-  // buat session (tanpa FK userId)
   const now = Date.now();
   const session = await prisma.session.create({
     data: {
@@ -90,8 +82,9 @@ router.post('/signin', async (req, res) => {
     select: { id: true },
   });
 
-  // set cookie sesi cross-site
+  // Set cookie session (cross-site)
   res.setHeader('Set-Cookie', makeCookie(session.id));
+
   return res.json({
     ok: true,
     admin: { id: admin.id, email: admin.email },
@@ -99,9 +92,7 @@ router.post('/signin', async (req, res) => {
   });
 });
 
-/**
- * POST /api/employers/auth/signout
- */
+/** POST /api/employers/auth/signout */
 router.post('/signout', async (req, res) => {
   try {
     const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
@@ -112,15 +103,11 @@ router.post('/signout', async (req, res) => {
       });
     }
   } catch {}
-  // hapus cookie
   res.setHeader('Set-Cookie', clearCookie());
   res.status(204).end();
 });
 
-/**
- * GET /api/employers/auth/me
- * Validasi cookie sesi → kembalikan employer + admin (dengan email)
- */
+/** GET /api/employers/auth/me */
 router.get('/me', async (req, res) => {
   const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
   if (!sid) return res.status(401).json({ error: 'NO_SESSION' });
