@@ -7,27 +7,31 @@ import { parse as parseCookie, serialize as serializeCookie } from 'cookie';
 const EMP_COOKIE = 'emp_session';
 const SESSION_HOURS = 12;
 
-// 🔐 Cookie helper that works cross-site (Vercel <-> Railway)
+/** Buat cookie sesi employer.
+ *  - Production (Railway/HTTPS): SameSite=None + Secure=true
+ *  - Local dev (http://localhost): SameSite=Lax + Secure=false
+ */
 function makeCookie(id: string) {
   const isProd = process.env.NODE_ENV === 'production';
   return serializeCookie(EMP_COOKIE, id, {
     httpOnly: true,
-    secure: isProd,            // MUST be true in prod with SameSite=None
+    secure: isProd,                // ✅ hanya true di production
     sameSite: isProd ? 'none' : 'lax',
     path: '/',
-    maxAge: SESSION_HOURS * 60 * 60,
+    maxAge: SESSION_HOURS * 60 * 60, // detik
   });
 }
 
-// Helper to clear cookie consistently (must match attrs)
+/** Hapus cookie sesi dengan atribut yang konsisten. */
 function clearCookie() {
   const isProd = process.env.NODE_ENV === 'production';
   return serializeCookie(EMP_COOKIE, '', {
     httpOnly: true,
-    secure: isProd,
+    secure: isProd,                // ✅ match makeCookie
     sameSite: isProd ? 'none' : 'lax',
     path: '/',
-    maxAge: 0,
+    maxAge: 0,                     // ✅ hapus segera
+    expires: new Date(0),
   });
 }
 
@@ -44,8 +48,11 @@ router.post('/signin', async (req, res) => {
     return res.status(400).json({ error: 'MISSING_CREDENTIALS' });
   }
 
+  // cari admin employer by email atau fullName (sebagai username)
   const admin = await prisma.employerAdminUser.findFirst({
-    where: { OR: [{ email: usernameOrEmail }, { fullName: usernameOrEmail }] },
+    where: {
+      OR: [{ email: usernameOrEmail }, { fullName: usernameOrEmail }],
+    },
     select: {
       id: true,
       email: true,
@@ -55,7 +62,9 @@ router.post('/signin', async (req, res) => {
     },
   });
 
-  if (!admin || !admin.passwordHash) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+  if (!admin || !admin.passwordHash) {
+    return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+  }
 
   const ok = await bcrypt.compare(password, admin.passwordHash);
   if (!ok) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
@@ -66,6 +75,7 @@ router.post('/signin', async (req, res) => {
   });
   if (!employer) return res.status(401).json({ error: 'NO_EMPLOYER' });
 
+  // buat session (tanpa FK userId)
   const now = Date.now();
   const session = await prisma.session.create({
     data: {
@@ -80,7 +90,7 @@ router.post('/signin', async (req, res) => {
     select: { id: true },
   });
 
-  // ✅ set cross-site cookie
+  // set cookie sesi cross-site
   res.setHeader('Set-Cookie', makeCookie(session.id));
   return res.json({
     ok: true,
@@ -102,13 +112,14 @@ router.post('/signout', async (req, res) => {
       });
     }
   } catch {}
-  // ✅ clear cookie with identical attrs
+  // hapus cookie
   res.setHeader('Set-Cookie', clearCookie());
   res.status(204).end();
 });
 
 /**
  * GET /api/employers/auth/me
+ * Validasi cookie sesi → kembalikan employer + admin (dengan email)
  */
 router.get('/me', async (req, res) => {
   const sid = parseCookie(req.headers.cookie || '')[EMP_COOKIE];
