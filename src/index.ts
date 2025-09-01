@@ -18,6 +18,7 @@ import adminPlansRouter from './routes/admin-plans';
 import paymentsRouter from './routes/payments';
 import tendersRouter from './routes/tenders';
 import adminTendersRouter from './routes/admin-tenders';
+import geoRouter from './routes/geo';
 import { jobsRouter } from './routes/jobs';
 
 // Role guards (optional)
@@ -123,6 +124,9 @@ app.use('/api/payments', paymentsRouter);
 // Jobs API
 app.use('/api', jobsRouter);
 
+// geo.ts
+app.use('/api/geo', geoRouter);
+
 /* -------------------------- Protected Examples -------------------------- */
 app.get('/api/profile', authRequired, (req, res) => {
   res.json({ ok: true, whoami: (req as any).auth });
@@ -147,6 +151,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 /* ------------------------- Start Server (port fallback) ------------------- */
+
 function startServer(startPort: number, maxTries = 10) {
   let port = startPort;
   let tries = 0;
