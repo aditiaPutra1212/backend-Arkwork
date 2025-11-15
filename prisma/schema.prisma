@@ -1,0 +1,583 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/**
+ * ===================== User & Admin =====================
+ */
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  passwordHash String?
+  photoUrl     String?
+  cvUrl        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  sessions     Session[]
+
+  oauthProvider String? // Menyimpan "google", "facebook", dll.
+  oauthId       String? // Menyimpan ID unik dari Google.
+
+  isVerified                 Boolean   @default(false)
+  verificationToken          String?   @unique // Token unik untuk verifikasi
+  verificationTokenExpiresAt DateTime? // Waktu kedaluwarsa token
+
+  // --- TAMBAHAN UNTUK FORGOT PASSWORD ---
+  resetToken          String?   @unique // Token unik untuk reset
+  resetTokenExpiresAt DateTime? // Waktu kedaluwarsa token
+  // -------------------------------------
+
+  applications JobApplication[]
+  savedJobs    SavedJob[]
+
+  @@unique([oauthProvider, oauthId])
+  @@index([verificationToken])
+  @@index([resetToken]) // Tambahkan index ini
+}
+
+model Admin {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+}
+
+/**
+ * ===================== Tender =====================
+ */
+model Tender {
+  id          Int      @id @default(autoincrement())
+  title       String
+  buyer       String
+  sector      Sector
+  location    String
+  status      Status
+  contract    Contract
+  deadline    DateTime
+  description String   @default("")
+  documents   String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now())
+  teamSlots   Int      @default(0)
+  budgetUSD   BigInt   @map("budget_usd")
+}
+
+/**
+ * ===================== Employer =====================
+ */
+model Employer {
+  id             String         @id @default(uuid()) @db.Uuid
+  slug           String         @unique
+  legalName      String         @map("legal_name")
+  displayName    String         @map("display_name")
+  website        String?
+  status         EmployerStatus @default(draft)
+  isVerified     Boolean        @default(false) @map("is_verified")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  onboardingStep OnboardingStep @default(PACKAGE) @map("onboarding_step")
+  blockedAt      DateTime?
+
+  /**
+   * ===== Monetisasi / Trial & Plan Aktif =====
+   * Catatan:
+   * - trialEndsAt & premiumUntil dipakai untuk guard akses fitur
+   * - currentPlanId refer ke Plan aktif saat ini
+   */
+  billingStatus  BillingStatus @default(none) @map("billing_status")
+  currentPlanId  String?       @map("current_plan_id") @db.Uuid
+  trialStartedAt DateTime?     @map("trial_started_at") @db.Timestamptz(6)
+  trialEndsAt    DateTime?     @map("trial_ends_at") @db.Timestamptz(6)
+  premiumUntil   DateTime?     @map("premium_until") @db.Timestamptz(6)
+  recurringToken String?       @map("recurring_token") // saved_token_id dari Midtrans (opsional)
+
+  /**
+   * ===== Relations =====
+   */
+  currentPlan     Plan?                 @relation("EmployerCurrentPlan", fields: [currentPlanId], references: [id])
+  admins          EmployerAdminUser[]
+  contacts        EmployerContact[]
+  metas           EmployerMeta[]
+  offices         EmployerOffice[]
+  profile         EmployerProfile?
+  jobs            Job[]
+  payments        Payment[]
+  sessions        Session[]
+  subscriptions   Subscription[]
+  verifications   VerificationRequest[]
+
+  @@index([billingStatus, trialEndsAt])
+  @@index([currentPlanId])
+  @@index([premiumUntil])
+  @@map("employers")
+}
+
+model EmployerProfile {
+  id          String       @id @default(uuid()) @db.Uuid
+  employerId  String       @unique @map("employer_id") @db.Uuid
+  industry    String?
+  size        CompanySize?
+  foundedYear Int?         @map("founded_year")
+  about       String?
+  logoUrl     String?      @map("logo_url")
+  bannerUrl   String?      @map("banner_url")
+  hqCity      String?      @map("hq_city")
+  hqCountry   String?      @map("hq_country")
+  linkedin    String?
+  twitter     String?
+  instagram   String?
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  employer    Employer     @relation(fields: [employerId], references: [id], onDelete: Cascade)
+
+  @@map("employer_profiles")
+}
+
+model EmployerAdminUser {
+  id           String    @id @default(uuid()) @db.Uuid
+  employerId   String    @map("employer_id") @db.Uuid
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  fullName     String?   @map("full_name")
+  phone        String?
+  isOwner      Boolean   @default(true) @map("is_owner")
+  agreedTosAt  DateTime? @map("agreed_tos_at")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  employer     Employer  @relation(fields: [employerId], references: [id], onDelete: Cascade)
+
+  @@index([employerId])
+  @@map("employer_admin_users")
+}
+
+model EmployerOffice {
+  id          String   @id @default(uuid()) @db.Uuid
+  employerId  String   @map("employer_id") @db.Uuid
+  label       String?
+  address1    String?  @map("address1")
+  address2    String?  @map("address2")
+  city        String?
+  state       String?
+  postalCode  String?  @map("postal_code")
+  country     String?
+  lat         Float?
+  lng         Float?
+  isRemoteHub Boolean  @default(false) @map("is_remote_hub")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  employer    Employer @relation(fields: [employerId], references: [id], onDelete: Cascade)
+
+  @@index([employerId])
+  @@map("employer_offices")
+}
+
+model EmployerContact {
+  id         String   @id @default(uuid()) @db.Uuid
+  employerId String   @map("employer_id") @db.Uuid
+  fullName   String   @map("full_name")
+  role       String?
+  email      String?
+  phone      String?
+  isPrimary  Boolean  @default(false) @map("is_primary")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  employer   Employer @relation(fields: [employerId], references: [id], onDelete: Cascade)
+
+  @@index([employerId])
+  @@map("employer_contacts")
+}
+
+model EmployerMeta {
+  id         String   @id @default(uuid()) @db.Uuid
+  employerId String   @map("employer_id") @db.Uuid
+  key        String
+  value      String?
+  employer   Employer @relation(fields: [employerId], references: [id], onDelete: Cascade)
+
+  @@unique([employerId, key])
+  @@map("employer_meta")
+}
+
+/**
+ * ===================== Plans / Payments =====================
+ */
+model Plan {
+  id          String  @id @default(uuid()) @db.Uuid
+  slug        String  @unique
+  name        String
+  description String?
+  currency    String  @default("IDR")
+  interval    String  @default("month") // "month" | "year"
+  amount      BigInt
+  active      Boolean @default(true)
+  priceId     String?
+  trialDays   Int     @default(0) // lama trial paket (0 = tanpa trial)
+
+  payments      Payment[]
+  subscriptions Subscription[]
+
+  // back-relation untuk Employer.currentPlan
+  currentForEmployers Employer[] @relation("EmployerCurrentPlan")
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                 String    @id @default(uuid()) @db.Uuid
+  employerId         String    @map("employer_id") @db.Uuid
+  planId             String    @map("plan_id") @db.Uuid
+  providerId         String?   @map("provider_id") // id langganan di Midtrans (subscription id)
+  status             String    @default("active") // active | past_due | canceled | expired
+  currentPeriodStart DateTime? @map("current_period_start")
+  currentPeriodEnd   DateTime? @map("current_period_end")
+  startAt            DateTime? @map("start_at") // jadwal mulai (bisa masa depan, pasca-trial)
+  trialEndsAt        DateTime? @map("trial_ends_at")
+  cancelAt           DateTime? @map("cancel_at") // jadwal cancel di akhir periode
+  canceledAt         DateTime? @map("canceled_at") // waktu cancel aktual
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items    SubscriptionItem[]
+  employer Employer           @relation(fields: [employerId], references: [id], onDelete: Cascade)
+  plan     Plan               @relation(fields: [planId], references: [id])
+
+  @@index([employerId])
+  @@index([planId])
+  @@index([status, currentPeriodEnd])
+  @@index([trialEndsAt])
+  @@map("subscriptions")
+}
+
+model SubscriptionItem {
+  id             String       @id @default(uuid()) @db.Uuid
+  subscriptionId String       @map("subscription_id") @db.Uuid
+  name           String
+  quantity       Int          @default(1)
+  metadata       Json?
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@map("subscription_items")
+}
+
+model Payment {
+  id            String   @id @default(uuid()) @db.Uuid
+  orderId       String   @unique @map("order_id")
+  planId        String?  @map("plan_id") @db.Uuid
+  employerId    String?  @map("employer_id") @db.Uuid
+  userId        String?
+  currency      String   @default("IDR")
+  grossAmount   BigInt   @map("gross_amount")
+  method        String?
+  status        String   @default("pending")
+  transactionId String?  @map("transaction_id")
+  fraudStatus   String?  @map("fraud_status")
+  meta          Json?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  redirectUrl   String?  @map("redirect_url")
+  token         String?  @map("token")
+
+  employer Employer? @relation(fields: [employerId], references: [id], onDelete: Cascade)
+  plan     Plan?     @relation(fields: [planId], references: [id])
+
+  @@index([planId])
+  @@index([employerId])
+  @@map("payments")
+}
+
+/**
+ * ===================== Jobs =====================
+ */
+model Job {
+  id          String   @id @default(uuid()) @db.Uuid
+  employerId  String   @db.Uuid
+  employer    Employer @relation(fields: [employerId], references: [id])
+  title       String
+  description String?
+  isActive    Boolean  @default(true)
+  isDraft     Boolean  @default(false)
+  isHidden    Boolean  @default(false)
+  hiddenReason String?
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  deletedAt   DateTime?
+
+  // untuk FE
+  location    String?
+  employment  String?
+  salaryMin        Int?        @map("salary_min")
+  salaryMax        Int?        @map("salary_max")
+  currency         String?     @default("IDR")
+  remoteMode       RemoteMode? @default(ON_SITE) @map("remote_mode")
+  experienceMinYears Int?        @map("exp_min_years")
+  education        Education?
+  deadline         DateTime?
+  tags             String[]    @default([])
+  requirements     String?
+
+  applications JobApplication[]
+  savedBy      SavedJob[]
+  reports      JobReport[]
+
+  @@index([employerId, isActive])
+  @@index([createdAt])
+}
+
+/**
+ * ===================== Verification =====================
+ */
+model VerificationRequest {
+  id         String             @id @default(uuid()) @db.Uuid
+  employerId String             @map("employer_id") @db.Uuid
+  status     VerificationStatus @default(pending)
+  note       String?
+  createdAt  DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  reviewedAt DateTime?          @map("reviewed_at")
+  files      VerificationFile[]
+  employer   Employer           @relation(fields: [employerId], references: [id], onDelete: Cascade)
+  tokens     VerifyToken[]
+
+  @@index([employerId, status])
+  @@map("verification_requests")
+}
+
+model VerificationFile {
+  id             String              @id @default(uuid()) @db.Uuid
+  verificationId String              @map("verification_id") @db.Uuid
+  fileUrl        String              @map("file_url")
+  fileType       String?             @map("file_type")
+  uploadedAt     DateTime            @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  verification   VerificationRequest @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@map("verification_files")
+}
+
+model VerifyToken {
+  id             String              @id @default(uuid()) @db.Uuid
+  verificationId String              @map("verification_id") @db.Uuid
+  type           String
+  token          String              @unique
+  expiresAt      DateTime            @map("expires_at")
+  usedAt         DateTime?           @map("used_at")
+  verification   VerificationRequest @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@map("verify_tokens")
+}
+
+/**
+ * ===================== Sessions =====================
+ */
+model Session {
+  id         String    @id @default(cuid())
+  userId     String?
+  employerId String?   @db.Uuid
+  createdAt  DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt  DateTime  @db.Timestamptz(6)
+  lastSeenAt DateTime  @default(now()) @db.Timestamptz(6)
+  ip         String?
+  userAgent  String?
+  revokedAt  DateTime?
+  employer   Employer? @relation(fields: [employerId], references: [id])
+  user       User?     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([employerId])
+  @@index([revokedAt])
+  @@map("sessions")
+}
+
+/**
+ * ===================== Job Applications & Saved Jobs =====================
+ */
+enum ApplicationStatus {
+  submitted
+  review
+  shortlist
+  rejected
+  hired
+}
+
+model JobApplication {
+  id        String            @id @default(cuid())
+  jobId     String            @db.Uuid
+  applicantId String
+  status    ApplicationStatus @default(submitted)
+  createdAt DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime          @default(now()) @updatedAt @db.Timestamptz(6)
+  cvUrl      String? @map("cv_url")
+  cvFileName String? @map("cv_file_name")
+  cvFileType String? @map("cv_file_type")
+  cvFileSize Int?    @map("cv_file_size")
+
+  job       Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  applicant User @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, applicantId])
+  @@index([applicantId])
+  @@index([jobId])
+  @@map("job_applications")
+}
+
+model SavedJob {
+  id        String   @id @default(cuid())
+  jobId     String   @db.Uuid
+  userId    String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, userId])
+  @@index([userId])
+  @@index([jobId])
+  @@map("saved_jobs")
+}
+
+/**
+ * ===================== Job Reporting =====================
+ */
+model JobReport {
+  id             String       @id @default(uuid())
+  jobId          String       @db.Uuid
+  job            Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reporterUserId String?
+  reporterEmail  String?
+  reason         ReportReason
+  details        String?
+  evidenceUrl    String?
+  status         ReportStatus @default(OPEN)
+  action         ReportAction @default(NONE)
+  resolvedById   String?
+  resolvedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @default(now()) @updatedAt
+
+  @@index([jobId, status])
+  @@index([status, createdAt])
+  @@map("job_reports")
+}
+
+/**
+ * ===================== Enums =====================
+ */
+enum Sector {
+  OIL_GAS
+  RENEWABLE_ENERGY
+  UTILITIES
+  ENGINEERING
+}
+
+enum Status {
+  OPEN
+  PREQUALIFICATION
+  CLOSED
+}
+
+enum Contract {
+  EPC
+  SUPPLY
+  CONSULTING
+  MAINTENANCE
+  PSC
+  SERVICE
+  JOC
+  TURNKEY
+  LOGISTICS
+  DRILLING
+  O_M       @map("O&M")
+}
+
+enum EmployerStatus {
+  draft
+  active
+  suspended
+  archived
+
+  @@map("employer_status")
+}
+
+enum BillingStatus {
+  none // belum pilih paket / belum bayar
+  trial // sedang trial (pakai Plan.trialDays)
+  active // berlangganan aktif (premium)
+  past_due // gagal charge / menunggak
+  canceled // berhenti langganan
+}
+
+enum CompanySize {
+  S1_10       @map("1-10")
+  S11_50      @map("11-50")
+  S51_200     @map("51-200")
+  S201_500    @map("201-500")
+  S501_1000   @map("501-1000")
+  S1001_5000  @map("1001-5000")
+  S5001_10000 @map("5001-10000")
+  S10000_PLUS @map("10000+")
+
+  @@map("company_size")
+}
+
+enum VerificationStatus {
+  pending
+  approved
+  rejected
+
+  @@map("verification_status")
+}
+
+enum OnboardingStep {
+  PACKAGE
+  JOB
+  VERIFY
+  DONE
+
+  @@map("onboarding_step")
+}
+
+enum RemoteMode {
+  ON_SITE
+  REMOTE
+  HYBRID
+}
+
+enum Education {
+  SMA_SMK @map("SMA/SMK")
+  D3
+  S1
+  S2
+  S3
+}
+
+/**
+ * ====== Enums untuk JobReport ======
+ */
+enum ReportReason {
+  SCAM
+  PHISHING
+  DUPLICATE
+  MISLEADING
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  UNDER_REVIEW
+  DISMISSED
+  ACTION_TAKEN
+}
+
+enum ReportAction {
+  NONE
+  HIDE_JOB
+  DELETE_JOB
+  BLOCK_EMPLOYER
+}

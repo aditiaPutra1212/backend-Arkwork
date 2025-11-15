@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    /* --- Pindahkan ke standar modern --- */
+    "module": "nodenext",
+    "moduleResolution": "nodenext", 
+    "target": "es2019",
+    "esModuleInterop": true,
+    
+    /* --- Mengarahkan Output Build ke folder "dist" --- */
+    "outDir": "./dist",
+    "rootDir": "./src",
+
+    /* --- Pilihan Anda yang lain (sudah bagus) --- */
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    
+    /* --- Opsional tapi sangat direkomendasikan --- */
+    "strict": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*"], 
+  "exclude": ["node_modules", "dist"] 
+}
