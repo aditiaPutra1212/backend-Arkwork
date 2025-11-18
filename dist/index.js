@@ -161,8 +161,8 @@ if (NODE_ENV !== 'production' && process.env.DEV_AUTH === '1') {
 }
 /* ================= ROUTES (ORDER MATTERS!) ================= */
 /* Public / auth routes */
-app.use('/auth', auth_1.default); // <-- KEMBALIKAN KE /auth
-app.use('/auth', google_1.default); // <-- KEMBALIKAN KE /auth
+app.use('/api/auth', auth_1.default);
+app.use('/api/auth', google_1.default);
 /* Employer */
 app.use('/api/employers/auth', employer_auth_1.default);
 app.use('/api/employers', employer_1.employerRouter);
